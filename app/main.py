@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.api.routes.cartons import router as cartons_router
 from app.api.routes.carton_types import router as carton_types_router
 from app.api.routes.health import router as health_router
+from app.api.routes.orders import router as orders_router
 from app.api.routes.product_packaging import router as product_packaging_router
 from app.api.routes.products import router as products_router
 from app.api.routes.warehouse_locations import router as warehouse_locations_router
@@ -17,3 +18,4 @@ app.include_router(carton_types_router)
 app.include_router(warehouse_locations_router)
 app.include_router(product_packaging_router)
 app.include_router(cartons_router)
+app.include_router(orders_router)
