@@ -1,0 +1,70 @@
+"""Depo yürüyüş grafı route testleri."""
+
+from types import SimpleNamespace
+
+from fastapi.testclient import TestClient
+
+from app.api.routes.warehouse_graph import get_warehouse_graph_service
+from app.main import app
+from app.models.inventory import WarehouseLocation
+from app.services.warehouse_graph import WarehouseGraphService
+
+
+def test_get_route_from_dispatch() -> None:
+    location = WarehouseLocation(
+        id=42,
+        aisle="SYN-A002",
+        bay="B003",
+        level="L02",
+        slot="S02",
+        max_weight_kg=1000,
+        distance_from_dispatch_m=0,
+        is_active=True,
+    )
+    snapshot = WarehouseGraphService.build_snapshot([location])
+    service = SimpleNamespace(load_snapshot=lambda: snapshot)
+    app.dependency_overrides[get_warehouse_graph_service] = lambda: service
+
+    try:
+        with TestClient(app) as client:
+            response = client.get(
+                "/warehouse-graph/routes/from-dispatch/42"
+            )
+    finally:
+        app.dependency_overrides.pop(get_warehouse_graph_service, None)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["location_id"] == 42
+    assert body["distance_m"] == 51.5
+    assert body["nodes"][0] == "dispatch"
+    assert body["nodes"][-1] == "location:A002:B003:L02:S02"
+
+
+def test_route_from_dispatch_rejects_unknown_location() -> None:
+    location = WarehouseLocation(
+        id=42,
+        aisle="SYN-A002",
+        bay="B003",
+        level="L02",
+        slot="S02",
+        max_weight_kg=1000,
+        distance_from_dispatch_m=0,
+        is_active=True,
+    )
+    snapshot = WarehouseGraphService.build_snapshot([location])
+    service = SimpleNamespace(load_snapshot=lambda: snapshot)
+    app.dependency_overrides[get_warehouse_graph_service] = lambda: service
+
+    try:
+        with TestClient(app) as client:
+            response = client.get(
+                "/warehouse-graph/routes/from-dispatch/999"
+            )
+    finally:
+        app.dependency_overrides.pop(get_warehouse_graph_service, None)
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": "Active warehouse location 999 is not in the graph"
+    }
