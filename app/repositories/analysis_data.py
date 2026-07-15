@@ -49,3 +49,28 @@ class AnalysisDataRepository:
                 statement
             )
         ]
+
+    def get_order_transactions(
+        self,
+        order_number_prefix: str | None = None,
+    ) -> list[set[str]]:
+        """Tamamlanan her siparişi benzersiz SKU kümesine dönüştürür."""
+        statement = (
+            select(Order.id, Product.sku)
+            .join(OrderLine, OrderLine.order_id == Order.id)
+            .join(Product, Product.id == OrderLine.product_id)
+            .where(
+                Order.status == "completed",
+                OrderLine.fulfilled_qty > 0,
+            )
+            .order_by(Order.id, Product.sku)
+        )
+        if order_number_prefix is not None:
+            statement = statement.where(
+                Order.order_number.like(f"{order_number_prefix}%")
+            )
+
+        transactions_by_order: dict[int, set[str]] = {}
+        for order_id, sku in self.session.execute(statement):
+            transactions_by_order.setdefault(order_id, set()).add(sku)
+        return list(transactions_by_order.values())
