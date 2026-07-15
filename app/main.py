@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 
 from app.api.routes.carton_allocations import router as carton_allocations_router
+from app.api.routes.carton_location_history import router as carton_location_history_router
 from app.api.routes.cartons import router as cartons_router
 from app.api.routes.carton_types import router as carton_types_router
 from app.api.routes.health import router as health_router
@@ -25,3 +26,4 @@ app.include_router(orders_router)
 app.include_router(order_lines_router)
 app.include_router(carton_allocations_router)
 app.include_router(pick_operations_router)
+app.include_router(carton_location_history_router)
