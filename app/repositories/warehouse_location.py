@@ -50,6 +50,22 @@ class WarehouseLocationRepository:
         )
         return list(self.session.scalars(statement))
 
+    def list_active_synthetic_locations(self) -> list[WarehouseLocation]:
+        statement = (
+            select(WarehouseLocation)
+            .where(
+                WarehouseLocation.is_active.is_(True),
+                WarehouseLocation.aisle.like("SYN-A%"),
+            )
+            .order_by(
+                WarehouseLocation.aisle,
+                WarehouseLocation.bay,
+                WarehouseLocation.level,
+                WarehouseLocation.slot,
+            )
+        )
+        return list(self.session.scalars(statement))
+
     def create(self, data: WarehouseLocationCreate) -> WarehouseLocation:
         location = WarehouseLocation(**data.model_dump())
         self.session.add(location)
