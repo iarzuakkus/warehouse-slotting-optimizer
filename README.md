@@ -151,6 +151,47 @@ Testler gerçek PostgreSQL bağlantısı kullandığı için Docker PostgreSQL c
 python -m pytest -v
 ```
 
+## Sentetik veri üretimi
+
+Sentetik veri sistemi gerçekçi talep yoğunluğu, birlikte sipariş edilen ürün
+grupları, fiziksel koliler, raflar ve geçmiş toplama hareketleri üretir.
+
+Kullanılabilir profiller:
+
+| Profil | Ürün | Raf | Koli | Geçmiş sipariş |
+|---|---:|---:|---:|---:|
+| `smoke` | 50 | 100 | 200 | 500 |
+| `small` | 250 | 500 | 1.500 | 10.000 |
+| `medium` | 1.000 | 2.000 | 10.000 | 100.000 |
+| `large` | 5.000 | 10.000 | 100.000 | 1.000.000 |
+
+Önce veritabanına yazmadan üretim planını görüntüleyin:
+
+```bash
+python -m scripts.generate_synthetic_data --profile smoke --seed 42
+```
+
+Plan doğruysa veriyi oluşturun:
+
+```bash
+python -m scripts.generate_synthetic_data --profile smoke --seed 42 --execute
+```
+
+`large` profil yanlışlıkla çalıştırılmasın diye ek onay gerektirir:
+
+```bash
+python -m scripts.generate_synthetic_data --profile large --seed 42 --execute --allow-large
+```
+
+Üretilen kayıtları ve popüler SKU dağılımını inceleyin:
+
+```bash
+python -m scripts.inspect_synthetic_data --top 10
+```
+
+Sentetik kayıtlar `SYN-*` ön ekiyle gerçek veya elle girilmiş örnek kayıtlardan
+ayrılır. Aynı sentetik veri setinin yanlışlıkla ikinci kez üretilmesi engellenir.
+
 ## Migration yönetimi
 
 Mevcut migration seviyesini ve model uyumluluğunu kontrol edin:

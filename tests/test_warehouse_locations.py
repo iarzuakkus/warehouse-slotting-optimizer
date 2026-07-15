@@ -20,6 +20,22 @@ def location_payload(
     }
 
 
+def list_all_locations(db_client: TestClient) -> list[dict[str, object]]:
+    locations: list[dict[str, object]] = []
+    offset = 0
+    while True:
+        response = db_client.get(
+            "/warehouse-locations",
+            params={"offset": offset, "limit": 100},
+        )
+        assert response.status_code == 200
+        page = response.json()
+        locations.extend(page)
+        if len(page) < 100:
+            return locations
+        offset += 100
+
+
 def test_create_warehouse_location(db_client: TestClient) -> None:
     response = db_client.post(
         "/warehouse-locations",
@@ -59,7 +75,7 @@ def test_warehouse_location_lifecycle(db_client: TestClient) -> None:
     location_id = create_response.json()["id"]
 
     get_response = db_client.get(f"/warehouse-locations/{location_id}")
-    list_response = db_client.get("/warehouse-locations")
+    listed_locations = list_all_locations(db_client)
     update_response = db_client.patch(
         f"/warehouse-locations/{location_id}",
         json={"slot": "02", "distance_from_dispatch_m": 15},
@@ -67,8 +83,7 @@ def test_warehouse_location_lifecycle(db_client: TestClient) -> None:
     deactivate_response = db_client.delete(f"/warehouse-locations/{location_id}")
 
     assert get_response.status_code == 200
-    assert list_response.status_code == 200
-    assert any(item["id"] == location_id for item in list_response.json())
+    assert any(item["id"] == location_id for item in listed_locations)
     assert update_response.status_code == 200
     assert update_response.json()["slot"] == "02"
     assert update_response.json()["distance_from_dispatch_m"] == "15.00"
