@@ -9,6 +9,7 @@ from app.api.routes.carton_types import router as carton_types_router
 from app.api.routes.health import router as health_router
 from app.api.routes.orders import router as orders_router
 from app.api.routes.order_lines import router as order_lines_router
+from app.api.routes.optimization_runs import router as optimization_runs_router
 from app.api.routes.pick_operations import router as pick_operations_router
 from app.api.routes.product_packaging import router as product_packaging_router
 from app.api.routes.products import router as products_router
@@ -27,3 +28,4 @@ app.include_router(order_lines_router)
 app.include_router(carton_allocations_router)
 app.include_router(pick_operations_router)
 app.include_router(carton_location_history_router)
+app.include_router(optimization_runs_router)
