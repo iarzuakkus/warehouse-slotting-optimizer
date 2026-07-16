@@ -7,6 +7,7 @@ from app.db.session import get_db
 from app.schemas.warehouse_graph import (
     BetweenLocationsRouteRead,
     DispatchRouteRead,
+    WarehouseGraphLayoutRead,
 )
 from app.services.warehouse_graph import (
     WarehouseGraphDataError,
@@ -22,6 +23,21 @@ def get_warehouse_graph_service(
     db: Session = Depends(get_db),
 ) -> WarehouseGraphService:
     return WarehouseGraphService(db)
+
+
+@router.get("/layout", response_model=WarehouseGraphLayoutRead)
+def get_warehouse_graph_layout(
+    include_locations: bool = Query(default=False),
+    service: WarehouseGraphService = Depends(get_warehouse_graph_service),
+) -> WarehouseGraphLayoutRead:
+    try:
+        snapshot = service.load_snapshot()
+        return snapshot.build_layout(include_locations=include_locations)
+    except WarehouseGraphDataError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get(

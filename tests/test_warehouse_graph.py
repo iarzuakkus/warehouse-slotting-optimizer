@@ -28,6 +28,18 @@ def test_builds_nodes_for_smoke_profile(smoke_graph: WarehouseGraph) -> None:
     assert smoke_graph.node_count == 126
 
 
+def test_exports_each_undirected_edge_once(
+    smoke_graph: WarehouseGraph,
+) -> None:
+    edges = smoke_graph.edges()
+    endpoint_pairs = {(edge.source, edge.target) for edge in edges}
+
+    assert len(edges) == 129
+    assert len(endpoint_pairs) == len(edges)
+    assert all(edge.source < edge.target for edge in edges)
+    assert all(edge.distance_m > 0 for edge in edges)
+
+
 def test_dispatch_distance_matches_synthetic_distance_formula(
     smoke_graph: WarehouseGraph,
 ) -> None:

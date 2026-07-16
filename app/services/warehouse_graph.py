@@ -14,12 +14,20 @@ from app.algorithms.warehouse_graph import (
 )
 from app.models.inventory import WarehouseLocation
 from app.repositories.warehouse_location import WarehouseLocationRepository
+from app.schemas.warehouse_graph import (
+    WarehouseGraphEdgeRead,
+    WarehouseGraphLayoutRead,
+    WarehouseGraphNodeRead,
+)
 
 
 AISLE_PATTERN = re.compile(r"^SYN-A0*([1-9]\d*)$")
 BAY_PATTERN = re.compile(r"^B0*([1-9]\d*)$")
 LEVEL_PATTERN = re.compile(r"^L0*([1-9]\d*)$")
 SLOT_PATTERN = re.compile(r"^S0*([1-9]\d*)$")
+PICKUP_NODE_PATTERN = re.compile(
+    r"^pickup:A0*([1-9]\d*):B0*([1-9]\d*)$"
+)
 
 
 class WarehouseGraphDataError(Exception):
@@ -36,6 +44,7 @@ class WarehouseGraphSnapshot:
 
     graph: WarehouseGraph
     location_keys_by_id: dict[int, LocationKey]
+    config: WarehouseGraphConfig
 
     @property
     def location_count(self) -> int:
@@ -64,6 +73,118 @@ class WarehouseGraphSnapshot:
         return self.graph.shortest_path(
             self.graph.location_node(start_key),
             self.graph.location_node(destination_key),
+        )
+
+    def build_layout(
+        self,
+        include_locations: bool = False,
+    ) -> WarehouseGraphLayoutRead:
+        """Grafı tarayıcıda çizilebilecek koordinatlı bir yapıya dönüştürür."""
+        location_data_by_node = {
+            self.graph.location_node(key): (location_id, key)
+            for location_id, key in self.location_keys_by_id.items()
+        }
+        nodes: list[WarehouseGraphNodeRead] = []
+        visible_node_ids: set[str] = set()
+
+        for node_id in self.graph.nodes():
+            if node_id == "dispatch":
+                node = WarehouseGraphNodeRead(
+                    id=node_id,
+                    node_type="dispatch",
+                    label="Sevkiyat",
+                    x=-self.config.aisle_spacing_m,
+                    y=0.0,
+                )
+            elif pickup_match := PICKUP_NODE_PATTERN.fullmatch(node_id):
+                aisle = int(pickup_match.group(1))
+                bay = int(pickup_match.group(2))
+                x, y = self._pickup_coordinates(aisle, bay)
+                node = WarehouseGraphNodeRead(
+                    id=node_id,
+                    node_type="pickup",
+                    label=f"A{aisle:03d}-B{bay:03d}",
+                    x=x,
+                    y=y,
+                )
+            elif node_id in location_data_by_node:
+                if not include_locations:
+                    continue
+                location_id, key = location_data_by_node[node_id]
+                pickup_x, pickup_y = self._pickup_coordinates(
+                    key.aisle,
+                    key.bay,
+                )
+                slot_step = min(
+                    1.0,
+                    self.config.aisle_spacing_m
+                    / (self.config.slots_per_level + 1),
+                )
+                level_step = min(
+                    0.75,
+                    self.config.bay_spacing_m
+                    / (self.config.levels_per_bay + 1),
+                )
+                node = WarehouseGraphNodeRead(
+                    id=node_id,
+                    node_type="location",
+                    label=(
+                        f"A{key.aisle:03d}-B{key.bay:03d}-"
+                        f"L{key.level:02d}-S{key.slot:02d}"
+                    ),
+                    x=(
+                        pickup_x
+                        + (
+                            key.slot
+                            - (self.config.slots_per_level + 1) / 2
+                        )
+                        * slot_step
+                    ),
+                    y=(
+                        pickup_y
+                        + (
+                            key.level
+                            - (self.config.levels_per_bay + 1) / 2
+                        )
+                        * level_step
+                    ),
+                    location_id=location_id,
+                )
+            elif node_id.startswith("location:"):
+                continue
+            else:
+                raise WarehouseGraphDataError(
+                    f"Unknown warehouse graph node: {node_id}"
+                )
+
+            nodes.append(node)
+            visible_node_ids.add(node_id)
+
+        edges = [
+            WarehouseGraphEdgeRead(
+                source=edge.source,
+                target=edge.target,
+                distance_m=edge.distance_m,
+            )
+            for edge in self.graph.edges()
+            if edge.source in visible_node_ids
+            and edge.target in visible_node_ids
+        ]
+        return WarehouseGraphLayoutRead(
+            node_count=len(nodes),
+            edge_count=len(edges),
+            nodes=nodes,
+            edges=edges,
+        )
+
+    def _pickup_coordinates(
+        self,
+        aisle: int,
+        bay: int,
+    ) -> tuple[float, float]:
+        return (
+            (aisle - 1) * self.config.aisle_spacing_m,
+            bay * self.config.bay_spacing_m,
         )
 
 
@@ -110,6 +231,7 @@ class WarehouseGraphService:
         return WarehouseGraphSnapshot(
             graph=graph,
             location_keys_by_id=location_keys_by_id,
+            config=config,
         )
 
 

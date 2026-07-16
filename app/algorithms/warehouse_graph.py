@@ -26,6 +26,15 @@ class ShortestPath:
     nodes: tuple[str, ...]
 
 
+@dataclass(frozen=True, order=True)
+class GraphEdge:
+    """Görselleştirmede kullanılacak benzersiz ve ağırlıklı graf kenarı."""
+
+    source: str
+    target: str
+    distance_m: float
+
+
 @dataclass(frozen=True)
 class WarehouseGraphConfig:
     """Sentetik depo ızgarasının boyutları ve fiziksel mesafeleri."""
@@ -73,6 +82,27 @@ class WarehouseGraph:
     @property
     def location_count(self) -> int:
         return len(self._location_nodes)
+
+    def nodes(self) -> tuple[str, ...]:
+        """Graf düğümlerini kararlı alfabetik sırayla döndürür."""
+        return tuple(sorted(self._adjacency))
+
+    def edges(self) -> tuple[GraphEdge, ...]:
+        """Çift yönlü graf kenarlarını tekrarsız ve kararlı sırayla döndürür."""
+        edges: list[GraphEdge] = []
+        for source in sorted(self._adjacency):
+            for target, distance_m in sorted(
+                self._adjacency[source].items()
+            ):
+                if source < target:
+                    edges.append(
+                        GraphEdge(
+                            source=source,
+                            target=target,
+                            distance_m=distance_m,
+                        )
+                    )
+        return tuple(edges)
 
     def add_node(self, node: str) -> None:
         if not node:

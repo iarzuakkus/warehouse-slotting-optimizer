@@ -134,3 +134,35 @@ def test_loads_only_active_synthetic_locations(
     assert active_location.id in snapshot.location_keys_by_id
     assert inactive_location.id not in snapshot.location_keys_by_id
     assert manual_location.id not in snapshot.location_keys_by_id
+
+
+def test_builds_topology_and_detailed_layouts() -> None:
+    coordinates = (
+        (aisle, bay, level, slot)
+        for aisle in range(1, 3)
+        for bay in range(1, 3)
+        for level in range(1, 3)
+        for slot in range(1, 3)
+    )
+    locations = [
+        warehouse_location(location_id, aisle, bay, level, slot)
+        for location_id, (aisle, bay, level, slot) in enumerate(
+            coordinates,
+            start=501,
+        )
+    ]
+    snapshot = WarehouseGraphService.build_snapshot(locations)
+
+    topology = snapshot.build_layout()
+    detailed = snapshot.build_layout(include_locations=True)
+    detailed_locations = [
+        node for node in detailed.nodes if node.node_type == "location"
+    ]
+
+    assert (topology.node_count, topology.edge_count) == (5, 5)
+    assert all(node.node_type != "location" for node in topology.nodes)
+    assert (detailed.node_count, detailed.edge_count) == (21, 21)
+    assert len(detailed_locations) == 16
+    assert {node.location_id for node in detailed_locations} == {
+        location.id for location in locations
+    }

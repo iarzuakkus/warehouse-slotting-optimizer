@@ -149,3 +149,42 @@ def test_route_between_locations_rejects_unknown_destination() -> None:
     assert response.json() == {
         "detail": "Active warehouse location 999 is not in the graph"
     }
+
+
+def test_get_warehouse_graph_layout() -> None:
+    location = WarehouseLocation(
+        id=42,
+        aisle="SYN-A001",
+        bay="B001",
+        level="L01",
+        slot="S01",
+        max_weight_kg=1000,
+        distance_from_dispatch_m=0,
+        is_active=True,
+    )
+    snapshot = WarehouseGraphService.build_snapshot([location])
+    service = SimpleNamespace(load_snapshot=lambda: snapshot)
+    app.dependency_overrides[get_warehouse_graph_service] = lambda: service
+
+    try:
+        with TestClient(app) as client:
+            topology_response = client.get("/warehouse-graph/layout")
+            detailed_response = client.get(
+                "/warehouse-graph/layout",
+                params={"include_locations": True},
+            )
+    finally:
+        app.dependency_overrides.pop(get_warehouse_graph_service, None)
+
+    assert topology_response.status_code == 200
+    assert detailed_response.status_code == 200
+
+    topology = topology_response.json()
+    detailed = detailed_response.json()
+    assert (topology["node_count"], topology["edge_count"]) == (2, 1)
+    assert all(node["node_type"] != "location" for node in topology["nodes"])
+    assert (detailed["node_count"], detailed["edge_count"]) == (3, 2)
+    location_node = next(
+        node for node in detailed["nodes"] if node["node_type"] == "location"
+    )
+    assert location_node["location_id"] == 42
