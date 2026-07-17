@@ -1,7 +1,7 @@
-"""Warehouse rack detail business rules."""
+"""Warehouse rack summary and detail business rules."""
 
-from decimal import Decimal
 import re
+from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
@@ -13,6 +13,7 @@ from app.schemas.warehouse_rack import (
     WarehouseRackPackagingRead,
     WarehouseRackProductRead,
     WarehouseRackRead,
+    WarehouseRackSummaryRead,
 )
 
 
@@ -26,6 +27,23 @@ class WarehouseRackService:
 
     def __init__(self, session: Session) -> None:
         self.repository = WarehouseRackRepository(session)
+
+    def list_racks(
+        self,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[WarehouseRackSummaryRead]:
+        locations = self.repository.list_rack_locations(offset=offset, limit=limit)
+        locations_by_rack: dict[tuple[str, str], list[WarehouseLocation]] = {}
+        for location in locations:
+            locations_by_rack.setdefault(
+                (location.aisle, location.bay),
+                [],
+            ).append(location)
+        return [
+            self._build_summary(rack_locations)
+            for rack_locations in locations_by_rack.values()
+        ]
 
     def get_rack(self, aisle: str, bay: str) -> WarehouseRackRead:
         normalized_aisle = aisle.strip().upper()
@@ -41,7 +59,18 @@ class WarehouseRackService:
                 f"Warehouse rack {normalized_aisle}/{normalized_bay} not found"
             )
 
+        summary = self._build_summary(locations)
         location_details = [self._build_location(location) for location in locations]
+
+        return WarehouseRackRead(
+            **summary.model_dump(),
+            locations=location_details,
+        )
+
+    def _build_summary(
+        self,
+        locations: list[WarehouseLocation],
+    ) -> WarehouseRackSummaryRead:
         cartons = [
             carton
             for location in locations
@@ -51,12 +80,12 @@ class WarehouseRackService:
             [location.max_weight_kg for location in locations]
         )
         total_used_weight = self._sum_optional(
-            [detail.used_weight_kg for detail in location_details]
+            [self._used_weight(location.current_cartons) for location in locations]
         )
 
-        return WarehouseRackRead(
-            aisle=normalized_aisle,
-            bay=normalized_bay,
+        return WarehouseRackSummaryRead(
+            aisle=locations[0].aisle,
+            bay=locations[0].bay,
             level_count=len({location.level for location in locations}),
             location_count=len(locations),
             active_location_count=sum(location.is_active for location in locations),
@@ -70,7 +99,6 @@ class WarehouseRackService:
                 total_used_weight,
                 total_max_weight,
             ),
-            locations=location_details,
         )
 
     def _build_location(

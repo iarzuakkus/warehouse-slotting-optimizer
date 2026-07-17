@@ -49,8 +49,8 @@ class WarehouseRackLocationRead(BaseModel):
     cartons: list[WarehouseRackCartonRead]
 
 
-class WarehouseRackRead(BaseModel):
-    """Locations that belong to one aisle and bay (a logical rack)."""
+class WarehouseRackSummaryRead(BaseModel):
+    """Lightweight occupancy summary for one logical rack."""
 
     aisle: str = Field(min_length=1, max_length=30)
     bay: str = Field(min_length=1, max_length=30)
@@ -62,4 +62,9 @@ class WarehouseRackRead(BaseModel):
     total_max_weight_kg: Decimal | None
     total_used_weight_kg: Decimal | None
     weight_utilization_percent: Decimal | None
+
+
+class WarehouseRackRead(WarehouseRackSummaryRead):
+    """Detailed locations that belong to one aisle and bay."""
+
     locations: list[WarehouseRackLocationRead] = Field(min_length=1)

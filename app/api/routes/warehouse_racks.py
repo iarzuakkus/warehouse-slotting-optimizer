@@ -1,10 +1,10 @@
-"""Warehouse rack detail endpoint."""
+"""Warehouse rack summary and detail endpoints."""
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.warehouse_rack import WarehouseRackRead
+from app.schemas.warehouse_rack import WarehouseRackRead, WarehouseRackSummaryRead
 from app.services.warehouse_rack import (
     WarehouseRackNotFoundError,
     WarehouseRackService,
@@ -18,6 +18,15 @@ def get_warehouse_rack_service(
     db: Session = Depends(get_db),
 ) -> WarehouseRackService:
     return WarehouseRackService(db)
+
+
+@router.get("", response_model=list[WarehouseRackSummaryRead])
+def list_warehouse_racks(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=100),
+    service: WarehouseRackService = Depends(get_warehouse_rack_service),
+) -> list[WarehouseRackSummaryRead]:
+    return service.list_racks(offset=offset, limit=limit)
 
 
 @router.get("/{aisle}/{bay}", response_model=WarehouseRackRead)
