@@ -16,6 +16,58 @@ if TYPE_CHECKING:
     from app.models.orders import CartonAllocation, PickOperation
 
 
+class WarehouseRack(TimestampMixin, Base):
+    __tablename__ = "warehouse_racks"
+    __table_args__ = (
+        UniqueConstraint("aisle", "bay"),
+        CheckConstraint("width_cm > 0", name="width_positive"),
+        CheckConstraint("depth_cm > 0", name="depth_positive"),
+        CheckConstraint(
+            "level_clear_height_cm > 0",
+            name="level_clear_height_positive",
+        ),
+        CheckConstraint("level_count > 0", name="level_count_positive"),
+        CheckConstraint("slots_per_level > 0", name="slots_per_level_positive"),
+        CheckConstraint("frame_thickness_cm > 0", name="frame_thickness_positive"),
+        CheckConstraint(
+            "width_cm > frame_thickness_cm * (slots_per_level + 1)",
+            name="width_has_usable_space",
+        ),
+        CheckConstraint(
+            "depth_cm > frame_thickness_cm * 2",
+            name="depth_has_usable_space",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    aisle: Mapped[str] = mapped_column(String(30), nullable=False)
+    bay: Mapped[str] = mapped_column(String(30), nullable=False)
+    width_cm: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    depth_cm: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    level_clear_height_cm: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2), nullable=False
+    )
+    level_count: Mapped[int] = mapped_column(nullable=False)
+    slots_per_level: Mapped[int] = mapped_column(nullable=False)
+    frame_thickness_cm: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2), nullable=False
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, server_default=text("true"), nullable=False
+    )
+
+    @property
+    def total_height_cm(self) -> Decimal:
+        return (
+            self.level_clear_height_cm * self.level_count
+            + self.frame_thickness_cm * (self.level_count + 1)
+        )
+
+    locations: Mapped[list["WarehouseLocation"]] = relationship(
+        back_populates="rack"
+    )
+
+
 class WarehouseLocation(TimestampMixin, Base):
     __tablename__ = "warehouse_locations"
     __table_args__ = (
@@ -25,6 +77,11 @@ class WarehouseLocation(TimestampMixin, Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    rack_id: Mapped[int] = mapped_column(
+        ForeignKey("warehouse_racks.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     aisle: Mapped[str] = mapped_column(String(30), nullable=False)
     bay: Mapped[str] = mapped_column(String(30), nullable=False)
     level: Mapped[str] = mapped_column(String(30), nullable=False)
@@ -35,6 +92,22 @@ class WarehouseLocation(TimestampMixin, Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"), nullable=False)
 
+    @property
+    def usable_width_cm(self) -> Decimal:
+        return (
+            self.rack.width_cm
+            - self.rack.frame_thickness_cm * (self.rack.slots_per_level + 1)
+        ) / self.rack.slots_per_level
+
+    @property
+    def usable_depth_cm(self) -> Decimal:
+        return self.rack.depth_cm - self.rack.frame_thickness_cm * 2
+
+    @property
+    def usable_height_cm(self) -> Decimal:
+        return self.rack.level_clear_height_cm
+
+    rack: Mapped["WarehouseRack"] = relationship(back_populates="locations")
     current_cartons: Mapped[list["Carton"]] = relationship(
         back_populates="current_location", foreign_keys="Carton.current_location_id"
     )
@@ -66,6 +139,35 @@ class Carton(TimestampMixin, Base):
             name="status_valid",
         ),
         Index("ix_cartons_status_current_location_id", "status", "current_location_id"),
+        CheckConstraint(
+            "position_x_cm IS NULL OR position_x_cm >= 0",
+            name="position_x_non_negative",
+        ),
+        CheckConstraint(
+            "position_y_cm IS NULL OR position_y_cm >= 0",
+            name="position_y_non_negative",
+        ),
+        CheckConstraint(
+            "position_z_cm IS NULL OR position_z_cm >= 0",
+            name="position_z_non_negative",
+        ),
+        CheckConstraint(
+            "rotation_degrees IS NULL OR rotation_degrees IN (0, 90)",
+            name="rotation_valid",
+        ),
+        CheckConstraint(
+            "(current_location_id IS NULL "
+            "AND position_x_cm IS NULL "
+            "AND position_y_cm IS NULL "
+            "AND position_z_cm IS NULL "
+            "AND rotation_degrees IS NULL) "
+            "OR (current_location_id IS NOT NULL "
+            "AND position_x_cm IS NOT NULL "
+            "AND position_y_cm IS NOT NULL "
+            "AND position_z_cm IS NOT NULL "
+            "AND rotation_degrees IS NOT NULL)",
+            name="placement_complete_for_location",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -76,6 +178,10 @@ class Carton(TimestampMixin, Base):
     current_location_id: Mapped[int | None] = mapped_column(
         ForeignKey("warehouse_locations.id", ondelete="SET NULL"), index=True
     )
+    position_x_cm: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    position_y_cm: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    position_z_cm: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    rotation_degrees: Mapped[int | None] = mapped_column()
     capacity_qty: Mapped[int] = mapped_column(nullable=False)
     current_qty: Mapped[int] = mapped_column(nullable=False)
     reserved_qty: Mapped[int] = mapped_column(server_default=text("0"), nullable=False)

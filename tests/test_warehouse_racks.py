@@ -1,10 +1,17 @@
 """Warehouse rack detail endpoint tests."""
 
 from fastapi.testclient import TestClient
+from sqlalchemy import event, select
+from sqlalchemy.orm import Session
+
+from app.db.session import engine
+from app.models.catalog import Product
+from tests.factories import carton_type_dimensions, create_warehouse_rack
 
 
 def create_location(
     client: TestClient,
+    session: Session,
     *,
     aisle: str,
     bay: str,
@@ -13,6 +20,7 @@ def create_location(
     is_active: bool = True,
     max_weight_kg: float | None = 500,
 ) -> dict[str, object]:
+    create_warehouse_rack(session, aisle=aisle, bay=bay)
     response = client.post(
         "/warehouse-locations",
         json={
@@ -49,9 +57,7 @@ def create_packaging(
         json={
             "code": f"RACK-SUMMARY-CT-{suffix}",
             "name": f"Rack Summary Carton Type {suffix}",
-            "inner_length_cm": 40,
-            "inner_width_cm": 30,
-            "inner_height_cm": 25,
+            **carton_type_dimensions(),
             "max_weight_kg": 1000,
             "is_active": True,
         },
@@ -124,9 +130,11 @@ SUMMARY_FIELDS = {
 
 def test_list_warehouse_racks_returns_sorted_lightweight_summaries(
     db_client: TestClient,
+    db_session: Session,
 ) -> None:
     create_location(
         db_client,
+        db_session,
         aisle="000-SUMMARY-B",
         bay="B02",
         level="L01",
@@ -134,6 +142,7 @@ def test_list_warehouse_racks_returns_sorted_lightweight_summaries(
     )
     create_location(
         db_client,
+        db_session,
         aisle="000-SUMMARY-A",
         bay="B01",
         level="L01",
@@ -157,9 +166,12 @@ def test_list_warehouse_racks_returns_sorted_lightweight_summaries(
     assert summaries[0]["active_location_count"] == 0
 
 
-def test_list_warehouse_racks_pagination(db_client: TestClient) -> None:
+def test_list_warehouse_racks_pagination(
+    db_client: TestClient, db_session: Session
+) -> None:
     create_location(
         db_client,
+        db_session,
         aisle="000-PAGE-A",
         bay="B01",
         level="L01",
@@ -167,6 +179,7 @@ def test_list_warehouse_racks_pagination(db_client: TestClient) -> None:
     )
     create_location(
         db_client,
+        db_session,
         aisle="000-PAGE-B",
         bay="B01",
         level="L01",
@@ -188,9 +201,11 @@ def test_list_warehouse_racks_pagination(db_client: TestClient) -> None:
 
 def test_list_warehouse_racks_counts_products_and_matches_detail(
     db_client: TestClient,
+    db_session: Session,
 ) -> None:
     first_location = create_location(
         db_client,
+        db_session,
         aisle="000-SUMMARY-WEIGHT",
         bay="B01",
         level="L01",
@@ -198,6 +213,7 @@ def test_list_warehouse_racks_counts_products_and_matches_detail(
     )
     second_location = create_location(
         db_client,
+        db_session,
         aisle="000-SUMMARY-WEIGHT",
         bay="B01",
         level="L02",
@@ -254,9 +270,11 @@ def test_list_warehouse_racks_counts_products_and_matches_detail(
 
 def test_list_warehouse_racks_preserves_null_capacity_behavior(
     db_client: TestClient,
+    db_session: Session,
 ) -> None:
     create_location(
         db_client,
+        db_session,
         aisle="000-SUMMARY-NO-CAP",
         bay="B01",
         level="L01",
@@ -273,9 +291,11 @@ def test_list_warehouse_racks_preserves_null_capacity_behavior(
 
 def test_list_warehouse_racks_preserves_unknown_unit_weight_behavior(
     db_client: TestClient,
+    db_session: Session,
 ) -> None:
     location = create_location(
         db_client,
+        db_session,
         aisle="000-SUMMARY-NO-WEIGHT",
         bay="B01",
         level="L01",
@@ -284,7 +304,7 @@ def test_list_warehouse_racks_preserves_unknown_unit_weight_behavior(
     packaging_id, _ = create_packaging(
         db_client,
         suffix="NO-WEIGHT",
-        unit_weight_kg=None,
+        unit_weight_kg=0.5,
     )
     create_carton(
         db_client,
@@ -293,6 +313,12 @@ def test_list_warehouse_racks_preserves_unknown_unit_weight_behavior(
         location_id=int(location["id"]),
         current_qty=10,
     )
+    product = db_session.scalar(
+        select(Product).where(Product.sku == "RACK-SUMMARY-PRODUCT-NO-WEIGHT")
+    )
+    assert product is not None
+    product.unit_weight_kg = None
+    db_session.flush()
 
     summary = find_rack_summary(db_client, "000-SUMMARY-NO-WEIGHT", "B01")
 
@@ -303,9 +329,12 @@ def test_list_warehouse_racks_preserves_unknown_unit_weight_behavior(
     assert summary["weight_utilization_percent"] is None
 
 
-def test_get_warehouse_rack_detail(db_client: TestClient) -> None:
+def test_get_warehouse_rack_detail(
+    db_client: TestClient, db_session: Session
+) -> None:
     second_location = create_location(
         db_client,
+        db_session,
         aisle="test-rack-a",
         bay="b01",
         level="l02",
@@ -314,6 +343,7 @@ def test_get_warehouse_rack_detail(db_client: TestClient) -> None:
     )
     first_location = create_location(
         db_client,
+        db_session,
         aisle="test-rack-a",
         bay="b01",
         level="l01",
@@ -357,9 +387,11 @@ def test_get_warehouse_rack_returns_404_for_unknown_rack(
 
 def test_get_warehouse_rack_resolves_frontend_synthetic_aisle_alias(
     db_client: TestClient,
+    db_session: Session,
 ) -> None:
     location = create_location(
         db_client,
+        db_session,
         aisle="SYN-A987",
         bay="B01",
         level="L01",
@@ -376,7 +408,13 @@ def test_get_warehouse_rack_resolves_frontend_synthetic_aisle_alias(
 
 def test_get_warehouse_rack_does_not_invent_missing_capacity(
     db_client: TestClient,
+    db_session: Session,
 ) -> None:
+    create_warehouse_rack(
+        db_session,
+        aisle="TEST-RACK-NO-CAPACITY",
+        bay="B01",
+    )
     create_response = db_client.post(
         "/warehouse-locations",
         json={
@@ -403,9 +441,11 @@ def test_get_warehouse_rack_does_not_invent_missing_capacity(
 
 def test_get_warehouse_rack_includes_carton_product_and_weight_details(
     db_client: TestClient,
+    db_session: Session,
 ) -> None:
     location = create_location(
         db_client,
+        db_session,
         aisle="test-rack-weight",
         bay="b01",
         level="l01",
@@ -425,9 +465,7 @@ def test_get_warehouse_rack_includes_carton_product_and_weight_details(
         json={
             "code": "TEST-RACK-CARTON-TYPE",
             "name": "Rack Test Carton Type",
-            "inner_length_cm": 40,
-            "inner_width_cm": 30,
-            "inner_height_cm": 25,
+            **carton_type_dimensions(),
             "max_weight_kg": 100,
             "is_active": True,
         },
@@ -473,4 +511,256 @@ def test_get_warehouse_rack_includes_carton_product_and_weight_details(
     assert carton["available_qty"] == 325
     assert carton["product"]["sku"] == "TEST-RACK-PRODUCT"
     assert carton["product"]["unit_weight_kg"] == "1.250"
+    assert carton["product"]["unit_length_cm"] is None
+    assert carton["product"]["unit_width_cm"] is None
+    assert carton["product"]["unit_height_cm"] is None
     assert carton["packaging"]["carton_type_code"] == "TEST-RACK-CARTON-TYPE"
+
+
+def test_get_warehouse_rack_scene_returns_physical_carton_dimensions(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    location = create_location(
+        db_client,
+        db_session,
+        aisle="000-SCENE-A",
+        bay="B01",
+        level="L01",
+        slot="S01",
+    )
+    packaging_id, _ = create_packaging(
+        db_client,
+        suffix="SCENE-A",
+        unit_weight_kg=1.25,
+    )
+    create_carton(
+        db_client,
+        suffix="SCENE-A",
+        packaging_id=packaging_id,
+        location_id=int(location["id"]),
+        current_qty=10,
+    )
+
+    response = db_client.get(
+        "/warehouse-racks/scene",
+        params={"offset": 0, "limit": 100},
+    )
+
+    assert response.status_code == 200
+    rack = next(item for item in response.json() if item["aisle"] == "000-SCENE-A")
+    assert set(rack) == {
+        "aisle",
+        "bay",
+        "width_cm",
+        "depth_cm",
+        "total_height_cm",
+        "level_clear_height_cm",
+        "level_count",
+        "slots_per_level",
+        "location_count",
+        "active_location_count",
+        "locations",
+    }
+    assert rack["bay"] == "B01"
+    assert rack["width_cm"] == "215.00"
+    assert rack["depth_cm"] == "90.00"
+    assert rack["total_height_cm"] == "135.00"
+    assert rack["level_clear_height_cm"] == "60.00"
+    assert rack["level_count"] == 2
+    assert rack["slots_per_level"] == 2
+    assert rack["location_count"] == 1
+    assert rack["active_location_count"] == 1
+    scene_location = rack["locations"][0]
+    assert set(scene_location) == {
+        "id",
+        "level",
+        "slot",
+        "is_active",
+        "usable_width_cm",
+        "usable_depth_cm",
+        "usable_height_cm",
+        "max_weight_kg",
+        "used_weight_kg",
+        "weight_utilization_percent",
+        "volume_utilization_percent",
+        "cartons",
+    }
+    assert scene_location["id"] == location["id"]
+    assert scene_location["usable_width_cm"] == "100.00"
+    assert scene_location["usable_depth_cm"] == "80.00"
+    assert scene_location["usable_height_cm"] == "60.00"
+    assert scene_location["used_weight_kg"] == "12.500"
+    assert scene_location["weight_utilization_percent"] == "2.50"
+    assert scene_location["volume_utilization_percent"] == "7.56"
+    carton = scene_location["cartons"][0]
+    assert set(carton) == {
+        "id",
+        "carton_number",
+        "carton_type_code",
+        "outer_length_cm",
+        "outer_width_cm",
+        "outer_height_cm",
+        "position_x_cm",
+        "position_y_cm",
+        "position_z_cm",
+        "rotation_degrees",
+    }
+    assert carton["carton_number"] == "RACK-SUMMARY-CARTON-SCENE-A"
+    assert carton["carton_type_code"] == "RACK-SUMMARY-CT-SCENE-A"
+    assert carton["outer_length_cm"] == "42.00"
+    assert carton["outer_width_cm"] == "32.00"
+    assert carton["outer_height_cm"] == "27.00"
+    assert carton["position_x_cm"] == "0.00"
+    assert carton["position_y_cm"] == "0.00"
+    assert carton["position_z_cm"] == "0.00"
+    assert carton["rotation_degrees"] == 0
+
+
+def test_get_warehouse_rack_scene_is_sorted_and_keeps_empty_cartons(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    create_location(
+        db_client,
+        db_session,
+        aisle="000-SCENE-SORT-B",
+        bay="B02",
+        level="L01",
+        slot="S01",
+    )
+    empty_location = create_location(
+        db_client,
+        db_session,
+        aisle="000-SCENE-SORT-A",
+        bay="B01",
+        level="L01",
+        slot="S01",
+    )
+
+    response = db_client.get("/warehouse-racks/scene", params={"limit": 100})
+
+    assert response.status_code == 200
+    racks = [
+        rack
+        for rack in response.json()
+        if rack["aisle"].startswith("000-SCENE-SORT-")
+    ]
+    assert [(rack["aisle"], rack["bay"]) for rack in racks] == [
+        ("000-SCENE-SORT-A", "B01"),
+        ("000-SCENE-SORT-B", "B02"),
+    ]
+    assert racks[0]["locations"][0]["id"] == empty_location["id"]
+    assert racks[0]["locations"][0]["cartons"] == []
+
+
+def test_get_warehouse_rack_scene_pagination_and_validation(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    create_location(
+        db_client,
+        db_session,
+        aisle="000-SCENE-PAGE-A",
+        bay="B01",
+        level="L01",
+        slot="S01",
+    )
+    create_location(
+        db_client,
+        db_session,
+        aisle="000-SCENE-PAGE-B",
+        bay="B01",
+        level="L01",
+        slot="S01",
+    )
+
+    first_two = db_client.get(
+        "/warehouse-racks/scene",
+        params={"offset": 0, "limit": 2},
+    )
+    first = db_client.get(
+        "/warehouse-racks/scene",
+        params={"offset": 0, "limit": 1},
+    )
+    second = db_client.get(
+        "/warehouse-racks/scene",
+        params={"offset": 1, "limit": 1},
+    )
+
+    assert first_two.status_code == 200
+    assert first_two.json() == first.json() + second.json()
+    assert db_client.get(
+        "/warehouse-racks/scene", params={"offset": -1}
+    ).status_code == 422
+    assert db_client.get(
+        "/warehouse-racks/scene", params={"limit": 0}
+    ).status_code == 422
+    assert db_client.get(
+        "/warehouse-racks/scene", params={"limit": 101}
+    ).status_code == 422
+
+
+def test_get_warehouse_rack_scene_includes_empty_physical_rack(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    create_warehouse_rack(
+        db_session,
+        aisle="000-SCENE-EMPTY",
+        bay="B01",
+        level_count=3,
+        slots_per_level=2,
+    )
+
+    response = db_client.get("/warehouse-racks/scene", params={"limit": 100})
+
+    assert response.status_code == 200
+    rack = next(
+        item for item in response.json() if item["aisle"] == "000-SCENE-EMPTY"
+    )
+    assert rack["level_count"] == 3
+    assert rack["location_count"] == 0
+    assert rack["active_location_count"] == 0
+    assert rack["locations"] == []
+
+
+def test_get_warehouse_rack_scene_uses_fixed_query_count(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    for index in range(8):
+        create_location(
+            db_client,
+            db_session,
+            aisle=f"000-SCENE-QUERY-{index:02d}",
+            bay="B01",
+            level="L01",
+            slot="S01",
+        )
+
+    select_statements: list[str] = []
+
+    def count_selects(
+        connection: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            select_statements.append(statement)
+
+    db_session.expire_all()
+    event.listen(engine, "before_cursor_execute", count_selects)
+    try:
+        response = db_client.get(
+            "/warehouse-racks/scene",
+            params={"offset": 0, "limit": 100},
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", count_selects)
+
+    assert response.status_code == 200
+    assert len(select_statements) <= 4

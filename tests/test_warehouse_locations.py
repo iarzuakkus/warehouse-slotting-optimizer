@@ -1,6 +1,9 @@
 """Depo konumu CRUD endpoint testleri."""
 
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+
+from tests.factories import create_warehouse_rack
 
 
 def location_payload(
@@ -36,7 +39,12 @@ def list_all_locations(db_client: TestClient) -> list[dict[str, object]]:
         offset += 100
 
 
-def test_create_warehouse_location(db_client: TestClient) -> None:
+def test_create_warehouse_location(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    rack = create_warehouse_rack(db_session, aisle="TEST-A", bay="01")
+
     response = db_client.post(
         "/warehouse-locations",
         json=location_payload("test-a", "01", "zemin", "sol"),
@@ -45,14 +53,23 @@ def test_create_warehouse_location(db_client: TestClient) -> None:
     assert response.status_code == 201
     body = response.json()
     assert body["id"] > 0
+    assert body["rack_id"] == rack.id
     assert body["aisle"] == "TEST-A"
     assert body["level"] == "ZEMIN"
     assert body["slot"] == "SOL"
+    assert body["usable_width_cm"] == "100.00"
+    assert body["usable_depth_cm"] == "80.00"
+    assert body["usable_height_cm"] == "60.00"
     assert body["max_weight_kg"] == "750.000"
     assert body["distance_from_dispatch_m"] == "12.50"
 
 
-def test_create_location_rejects_duplicate_coordinates(db_client: TestClient) -> None:
+def test_create_location_rejects_duplicate_coordinates(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    create_warehouse_rack(db_session, aisle="TEST-B", bay="01")
+
     first_response = db_client.post(
         "/warehouse-locations",
         json=location_payload("test-b", "01", "01", "01"),
@@ -66,7 +83,12 @@ def test_create_location_rejects_duplicate_coordinates(db_client: TestClient) ->
     assert duplicate_response.status_code == 409
 
 
-def test_warehouse_location_lifecycle(db_client: TestClient) -> None:
+def test_warehouse_location_lifecycle(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    create_warehouse_rack(db_session, aisle="TEST-C", bay="01")
+
     create_response = db_client.post(
         "/warehouse-locations",
         json=location_payload("TEST-C", "01", "01", "01"),
@@ -91,7 +113,12 @@ def test_warehouse_location_lifecycle(db_client: TestClient) -> None:
     assert deactivate_response.json()["is_active"] is False
 
 
-def test_partial_update_rejects_coordinate_collision(db_client: TestClient) -> None:
+def test_partial_update_rejects_coordinate_collision(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    create_warehouse_rack(db_session, aisle="TEST-D", bay="01")
+
     first_response = db_client.post(
         "/warehouse-locations",
         json=location_payload("TEST-D", "01", "01", "01"),
@@ -111,7 +138,12 @@ def test_partial_update_rejects_coordinate_collision(db_client: TestClient) -> N
     assert response.status_code == 409
 
 
-def test_update_location_rejects_null_coordinate(db_client: TestClient) -> None:
+def test_update_location_rejects_null_coordinate(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    create_warehouse_rack(db_session, aisle="TEST-E", bay="01")
+
     create_response = db_client.post(
         "/warehouse-locations",
         json=location_payload("TEST-E", "01", "01", "01"),
@@ -124,3 +156,62 @@ def test_update_location_rejects_null_coordinate(db_client: TestClient) -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_create_location_rejects_unknown_rack(db_client: TestClient) -> None:
+    response = db_client.post(
+        "/warehouse-locations",
+        json=location_payload("TEST-MISSING", "01", "01", "01"),
+    )
+
+    assert response.status_code == 404
+
+
+def test_create_location_rejects_rack_slot_capacity_exceeded(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    create_warehouse_rack(
+        db_session,
+        aisle="TEST-SLOT-LIMIT",
+        bay="01",
+        level_count=1,
+        slots_per_level=1,
+    )
+    first_response = db_client.post(
+        "/warehouse-locations",
+        json=location_payload("TEST-SLOT-LIMIT", "01", "L01", "S01"),
+    )
+    assert first_response.status_code == 201
+
+    response = db_client.post(
+        "/warehouse-locations",
+        json=location_payload("TEST-SLOT-LIMIT", "01", "L01", "S02"),
+    )
+
+    assert response.status_code == 409
+
+
+def test_create_location_rejects_rack_level_capacity_exceeded(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    create_warehouse_rack(
+        db_session,
+        aisle="TEST-LEVEL-LIMIT",
+        bay="01",
+        level_count=1,
+        slots_per_level=2,
+    )
+    first_response = db_client.post(
+        "/warehouse-locations",
+        json=location_payload("TEST-LEVEL-LIMIT", "01", "L01", "S01"),
+    )
+    assert first_response.status_code == 201
+
+    response = db_client.post(
+        "/warehouse-locations",
+        json=location_payload("TEST-LEVEL-LIMIT", "01", "L02", "S01"),
+    )
+
+    assert response.status_code == 409

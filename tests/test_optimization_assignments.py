@@ -1,10 +1,14 @@
 """Optimizasyon yerleşim önerisi endpoint testleri."""
 
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+
+from tests.factories import carton_type_dimensions, create_warehouse_rack
 
 
 def create_assignment_context(
     db_client: TestClient,
+    db_session: Session,
     suffix: str,
     start_run: bool = True,
 ) -> tuple[int, int, int, int]:
@@ -13,6 +17,7 @@ def create_assignment_context(
         json={
             "sku": f"TEST-ASSIGNMENT-PRODUCT-{suffix}",
             "name": "Yerlesim Onerisi Test Urunu",
+            "unit_weight_kg": "0.500",
             "is_active": True,
         },
     )
@@ -21,9 +26,7 @@ def create_assignment_context(
         json={
             "code": f"TEST-ASSIGNMENT-CT-{suffix}",
             "name": "Yerlesim Onerisi Test Tipi",
-            "inner_length_cm": 40,
-            "inner_width_cm": 30,
-            "inner_height_cm": 25,
+            **carton_type_dimensions(),
             "max_weight_kg": 20,
             "is_active": True,
         },
@@ -44,13 +47,16 @@ def create_assignment_context(
 
     location_ids: list[int] = []
     for label, slot in (("SOURCE", "01"), ("TARGET", "02")):
+        aisle = f"TEST-ASSIGNMENT-{suffix}-{label}"
+        create_warehouse_rack(db_session, aisle=aisle, bay="01")
         location = db_client.post(
             "/warehouse-locations",
             json={
-                "aisle": f"TEST-ASSIGNMENT-{suffix}-{label}",
+                "aisle": aisle,
                 "bay": "01",
                 "level": "01",
                 "slot": slot,
+                "max_weight_kg": 750,
                 "distance_from_dispatch_m": 10,
                 "is_active": True,
             },
@@ -88,9 +94,12 @@ def create_assignment_context(
     return run_id, carton.json()["id"], location_ids[0], location_ids[1]
 
 
-def test_optimization_assignment_lifecycle(db_client: TestClient) -> None:
+def test_optimization_assignment_lifecycle(
+    db_client: TestClient, db_session: Session
+) -> None:
     run_id, carton_id, source_id, target_id = create_assignment_context(
         db_client,
+        db_session,
         "001",
     )
     url = f"/optimization-runs/{run_id}/assignments"
@@ -113,6 +122,10 @@ def test_optimization_assignment_lifecycle(db_client: TestClient) -> None:
 
     assert create_response.json()["from_location_id"] == source_id
     assert create_response.json()["to_location_id"] == target_id
+    assert create_response.json()["proposed_position_x_cm"] == "0.00"
+    assert create_response.json()["proposed_position_y_cm"] == "0.00"
+    assert create_response.json()["proposed_position_z_cm"] == "0.00"
+    assert create_response.json()["proposed_rotation_degrees"] == 0
     assert create_response.json()["assignment_score"] == "8.250000"
     assert [item["id"] for item in list_response.json()] == [assignment_id]
     assert detail_response.status_code == 200
@@ -120,8 +133,12 @@ def test_optimization_assignment_lifecycle(db_client: TestClient) -> None:
     assert final_response.status_code == 404
 
 
-def test_rejects_duplicate_carton_assignment(db_client: TestClient) -> None:
-    run_id, carton_id, _, target_id = create_assignment_context(db_client, "002")
+def test_rejects_duplicate_carton_assignment(
+    db_client: TestClient, db_session: Session
+) -> None:
+    run_id, carton_id, _, target_id = create_assignment_context(
+        db_client, db_session, "002"
+    )
     url = f"/optimization-runs/{run_id}/assignments"
     payload = {"carton_id": carton_id, "to_location_id": target_id}
 
@@ -132,9 +149,12 @@ def test_rejects_duplicate_carton_assignment(db_client: TestClient) -> None:
     assert duplicate.status_code == 409
 
 
-def test_rejects_assignment_while_run_is_pending(db_client: TestClient) -> None:
+def test_rejects_assignment_while_run_is_pending(
+    db_client: TestClient, db_session: Session
+) -> None:
     run_id, carton_id, _, target_id = create_assignment_context(
         db_client,
+        db_session,
         "003",
         start_run=False,
     )
@@ -147,8 +167,12 @@ def test_rejects_assignment_while_run_is_pending(db_client: TestClient) -> None:
     assert response.status_code == 409
 
 
-def test_rejects_assignment_to_current_location(db_client: TestClient) -> None:
-    run_id, carton_id, source_id, _ = create_assignment_context(db_client, "004")
+def test_rejects_assignment_to_current_location(
+    db_client: TestClient, db_session: Session
+) -> None:
+    run_id, carton_id, source_id, _ = create_assignment_context(
+        db_client, db_session, "004"
+    )
 
     response = db_client.post(
         f"/optimization-runs/{run_id}/assignments",
@@ -158,8 +182,12 @@ def test_rejects_assignment_to_current_location(db_client: TestClient) -> None:
     assert response.status_code == 409
 
 
-def test_completed_run_locks_assignments(db_client: TestClient) -> None:
-    run_id, carton_id, _, target_id = create_assignment_context(db_client, "005")
+def test_completed_run_locks_assignments(
+    db_client: TestClient, db_session: Session
+) -> None:
+    run_id, carton_id, _, target_id = create_assignment_context(
+        db_client, db_session, "005"
+    )
     url = f"/optimization-runs/{run_id}/assignments"
     assignment = db_client.post(
         url,

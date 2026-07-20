@@ -12,6 +12,8 @@ from app.schemas.warehouse_location import (
 from app.services.warehouse_location import (
     DuplicateWarehouseLocationError,
     WarehouseLocationNotFoundError,
+    WarehouseLocationRackCapacityError,
+    WarehouseLocationRackNotFoundError,
     WarehouseLocationService,
 )
 
@@ -50,6 +52,10 @@ def create_location(
 ) -> WarehouseLocationRead:
     try:
         return service.create_location(data)
+    except WarehouseLocationRackNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except WarehouseLocationRackCapacityError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except DuplicateWarehouseLocationError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -64,6 +70,8 @@ def update_location(
         return service.update_location(location_id, data)
     except WarehouseLocationNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except WarehouseLocationRackCapacityError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except DuplicateWarehouseLocationError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 

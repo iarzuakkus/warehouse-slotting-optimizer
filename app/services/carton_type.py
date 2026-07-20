@@ -16,6 +16,10 @@ class DuplicateCartonTypeCodeError(Exception):
     """Aynı kodla ikinci koli tipi oluşturulmak istendiğinde kullanılır."""
 
 
+class CartonTypeDimensionError(Exception):
+    """Raised when inner and outer carton dimensions are inconsistent."""
+
+
 class CartonTypeService:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -30,8 +34,32 @@ class CartonTypeService:
             raise CartonTypeNotFoundError(f"Carton type {carton_type_id} not found")
         return carton_type
 
+    @staticmethod
+    def _validate_dimensions(
+        data: CartonTypeCreate | CartonTypeUpdate,
+        current: CartonType | None = None,
+    ) -> None:
+        for name in ("length", "width", "height"):
+            inner_field = f"inner_{name}_cm"
+            outer_field = f"outer_{name}_cm"
+            inner_dimension = (
+                getattr(data, inner_field)
+                if current is None or inner_field in data.model_fields_set
+                else getattr(current, inner_field)
+            )
+            outer_dimension = (
+                getattr(data, outer_field)
+                if current is None or outer_field in data.model_fields_set
+                else getattr(current, outer_field)
+            )
+            if outer_dimension < inner_dimension:
+                raise CartonTypeDimensionError(
+                    f"{outer_field} cannot be smaller than {inner_field}"
+                )
+
     def create_carton_type(self, data: CartonTypeCreate) -> CartonType:
         normalized_data = data.model_copy(update={"code": data.code.upper()})
+        self._validate_dimensions(normalized_data)
 
         if self.repository.get_by_code(normalized_data.code) is not None:
             raise DuplicateCartonTypeCodeError(
@@ -55,6 +83,7 @@ class CartonTypeService:
         data: CartonTypeUpdate,
     ) -> CartonType:
         carton_type = self.get_carton_type(carton_type_id)
+        self._validate_dimensions(data, current=carton_type)
 
         if data.code is not None:
             normalized_code = data.code.upper()

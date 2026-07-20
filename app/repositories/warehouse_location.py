@@ -1,7 +1,7 @@
 """Depo konumu tablosu için SQLAlchemy veritabanı işlemleri."""
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models.inventory import WarehouseLocation
 from app.schemas.warehouse_location import (
@@ -15,7 +15,12 @@ class WarehouseLocationRepository:
         self.session = session
 
     def get_by_id(self, location_id: int) -> WarehouseLocation | None:
-        return self.session.get(WarehouseLocation, location_id)
+        statement = (
+            select(WarehouseLocation)
+            .where(WarehouseLocation.id == location_id)
+            .options(joinedload(WarehouseLocation.rack))
+        )
+        return self.session.scalar(statement)
 
     def get_by_coordinates(
         self,
@@ -29,7 +34,7 @@ class WarehouseLocationRepository:
             WarehouseLocation.bay == bay,
             WarehouseLocation.level == level,
             WarehouseLocation.slot == slot,
-        )
+        ).options(joinedload(WarehouseLocation.rack))
         return self.session.scalar(statement)
 
     def list_locations(
@@ -45,6 +50,7 @@ class WarehouseLocationRepository:
                 WarehouseLocation.level,
                 WarehouseLocation.slot,
             )
+            .options(joinedload(WarehouseLocation.rack))
             .offset(offset)
             .limit(limit)
         )
@@ -63,11 +69,16 @@ class WarehouseLocationRepository:
                 WarehouseLocation.level,
                 WarehouseLocation.slot,
             )
+            .options(joinedload(WarehouseLocation.rack))
         )
         return list(self.session.scalars(statement))
 
-    def create(self, data: WarehouseLocationCreate) -> WarehouseLocation:
-        location = WarehouseLocation(**data.model_dump())
+    def create(
+        self,
+        data: WarehouseLocationCreate,
+        rack_id: int,
+    ) -> WarehouseLocation:
+        location = WarehouseLocation(rack_id=rack_id, **data.model_dump())
         self.session.add(location)
         self.session.flush()
         return location
@@ -76,10 +87,13 @@ class WarehouseLocationRepository:
         self,
         location: WarehouseLocation,
         data: WarehouseLocationUpdate,
+        rack_id: int | None = None,
     ) -> WarehouseLocation:
         changes = data.model_dump(exclude_unset=True)
         for field, value in changes.items():
             setattr(location, field, value)
+        if rack_id is not None:
+            location.rack_id = rack_id
 
         self.session.flush()
         return location

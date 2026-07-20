@@ -11,7 +11,7 @@ from app.main import app
 
 
 @pytest.fixture
-def db_client() -> Generator[TestClient, None, None]:
+def db_session() -> Generator[Session, None, None]:
     connection = engine.connect()
     outer_transaction = connection.begin()
     session = Session(
@@ -20,8 +20,18 @@ def db_client() -> Generator[TestClient, None, None]:
         join_transaction_mode="create_savepoint",
     )
 
-    def override_get_db() -> Generator[Session, None, None]:
+    try:
         yield session
+    finally:
+        session.close()
+        outer_transaction.rollback()
+        connection.close()
+
+
+@pytest.fixture
+def db_client(db_session: Session) -> Generator[TestClient, None, None]:
+    def override_get_db() -> Generator[Session, None, None]:
+        yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
 
@@ -30,6 +40,3 @@ def db_client() -> Generator[TestClient, None, None]:
             yield client
     finally:
         app.dependency_overrides.clear()
-        session.close()
-        outer_transaction.rollback()
-        connection.close()

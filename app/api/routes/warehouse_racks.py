@@ -4,7 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.warehouse_rack import WarehouseRackRead, WarehouseRackSummaryRead
+from app.schemas.warehouse_rack import (
+    WarehouseRackRead,
+    WarehouseRackSceneRead,
+    WarehouseRackSummaryRead,
+)
 from app.services.warehouse_rack import (
     WarehouseRackNotFoundError,
     WarehouseRackService,
@@ -27,6 +31,15 @@ def list_warehouse_racks(
     service: WarehouseRackService = Depends(get_warehouse_rack_service),
 ) -> list[WarehouseRackSummaryRead]:
     return service.list_racks(offset=offset, limit=limit)
+
+
+@router.get("/scene", response_model=list[WarehouseRackSceneRead])
+def list_warehouse_rack_scene(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=100),
+    service: WarehouseRackService = Depends(get_warehouse_rack_service),
+) -> list[WarehouseRackSceneRead]:
+    return service.list_scene_racks(offset=offset, limit=limit)
 
 
 @router.get("/{aisle}/{bay}", response_model=WarehouseRackRead)

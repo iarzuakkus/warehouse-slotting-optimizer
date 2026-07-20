@@ -10,6 +10,7 @@ from app.repositories.carton_location_history import (
 )
 from app.repositories.warehouse_location import WarehouseLocationRepository
 from app.schemas.carton_location_history import CartonMovementCreate
+from app.services.carton_placement import CartonPlacementService
 
 
 class CartonMovementNotFoundError(Exception):
@@ -30,6 +31,7 @@ class CartonLocationHistoryService:
         self.repository = CartonLocationHistoryRepository(session)
         self.carton_repository = CartonRepository(session)
         self.location_repository = WarehouseLocationRepository(session)
+        self.placement_service = CartonPlacementService(session)
 
     def _get_carton(self, carton_id: int) -> Carton:
         carton = self.carton_repository.get_by_id(carton_id)
@@ -87,13 +89,39 @@ class CartonLocationHistoryService:
                     f"Warehouse location {data.to_location_id} is inactive"
                 )
 
+        placement = None
+        effective_data = data
+        if data.to_location_id is not None:
+            packaging = carton.product_packaging
+            excluded_location_ids = (
+                {from_location_id} if from_location_id is not None else set()
+            )
+            placement = self.placement_service.find_available_placement(
+                product=packaging.product,
+                carton_type=packaging.carton_type,
+                current_qty=carton.current_qty,
+                preferred_location_id=data.to_location_id,
+                exclude_carton_id=carton.id,
+                excluded_location_ids=excluded_location_ids,
+            )
+            if placement is None:
+                raise CartonMovementConflictError(
+                    "No warehouse location has enough physical and weight capacity"
+                )
+            effective_data = data.model_copy(
+                update={"to_location_id": placement.location_id}
+            )
+
         try:
             history = self.repository.create(
                 carton_id=carton.id,
                 from_location_id=from_location_id,
-                data=data,
+                data=effective_data,
             )
-            carton.current_location_id = data.to_location_id
+            if placement is None:
+                self.placement_service.clear_placement(carton)
+            else:
+                self.placement_service.apply_decision(carton, placement)
             self.session.flush()
             self.session.commit()
             self.session.refresh(history)

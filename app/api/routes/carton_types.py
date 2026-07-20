@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.schemas.carton_type import CartonTypeCreate, CartonTypeRead, CartonTypeUpdate
 from app.services.carton_type import (
+    CartonTypeDimensionError,
     CartonTypeNotFoundError,
     CartonTypeService,
     DuplicateCartonTypeCodeError,
@@ -46,6 +47,11 @@ def create_carton_type(
 ) -> CartonTypeRead:
     try:
         return service.create_carton_type(data)
+    except CartonTypeDimensionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
     except DuplicateCartonTypeCodeError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -60,6 +66,11 @@ def update_carton_type(
         return service.update_carton_type(carton_type_id, data)
     except CartonTypeNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except CartonTypeDimensionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
     except DuplicateCartonTypeCodeError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 

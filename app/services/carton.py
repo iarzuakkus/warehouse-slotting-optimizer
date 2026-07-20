@@ -3,6 +3,7 @@
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.models.catalog import CartonType, Product, ProductPackaging
 from app.models.inventory import Carton
 from app.repositories.carton import CartonRepository
 from app.repositories.carton_type import CartonTypeRepository
@@ -10,6 +11,7 @@ from app.repositories.product import ProductRepository
 from app.repositories.product_packaging import ProductPackagingRepository
 from app.repositories.warehouse_location import WarehouseLocationRepository
 from app.schemas.carton import CartonCreate, CartonStatus, CartonUpdate
+from app.services.carton_placement import CartonPlacementService
 
 
 class CartonNotFoundError(Exception):
@@ -40,6 +42,7 @@ class CartonService:
         self.product_repository = ProductRepository(session)
         self.carton_type_repository = CartonTypeRepository(session)
         self.location_repository = WarehouseLocationRepository(session)
+        self.placement_service = CartonPlacementService(session)
 
     def list_cartons(
         self,
@@ -61,7 +64,10 @@ class CartonService:
             raise CartonNotFoundError(f"Carton {carton_id} not found")
         return carton
 
-    def _get_capacity(self, packaging_id: int) -> int:
+    def _get_packaging_context(
+        self,
+        packaging_id: int,
+    ) -> tuple[ProductPackaging, Product, CartonType]:
         packaging = self.packaging_repository.get_by_id(packaging_id)
         if packaging is None:
             raise CartonReferenceNotFoundError(
@@ -78,7 +84,7 @@ class CartonService:
             raise InactiveCartonReferenceError(
                 "Product packaging uses an inactive product or carton type"
             )
-        return packaging.units_per_carton
+        return packaging, product, carton_type
 
     def _validate_location(self, location_id: int | None) -> None:
         if location_id is None:
@@ -127,7 +133,10 @@ class CartonService:
                 f"Carton number {carton_number} already exists"
             )
 
-        capacity_qty = self._get_capacity(data.product_packaging_id)
+        packaging, product, carton_type = self._get_packaging_context(
+            data.product_packaging_id
+        )
+        capacity_qty = packaging.units_per_carton
         self._validate_location(data.current_location_id)
         self._validate_quantities(
             data.current_qty,
@@ -144,9 +153,23 @@ class CartonService:
                 ),
             }
         )
+        placement = None
+        if data.current_location_id is not None:
+            placement = self.placement_service.find_available_placement(
+                product=product,
+                carton_type=carton_type,
+                current_qty=data.current_qty,
+                preferred_location_id=data.current_location_id,
+            )
+        storage_data = normalized_data.model_copy(
+            update={"current_location_id": None}
+        )
 
         try:
-            carton = self.repository.create(normalized_data, capacity_qty)
+            carton = self.repository.create(storage_data, capacity_qty)
+            if placement is not None:
+                self.placement_service.apply_decision(carton, placement)
+                self.session.flush()
             self.session.commit()
             self.session.refresh(carton)
             return carton
@@ -187,7 +210,27 @@ class CartonService:
             )
         normalized_data = data.model_copy(update={"status": final_status})
 
+        placement = None
+        placement_must_be_updated = (
+            carton.current_location_id is not None
+            and "current_qty" in data.model_fields_set
+        )
+        if placement_must_be_updated:
+            packaging = carton.product_packaging
+            placement = self.placement_service.find_available_placement(
+                product=packaging.product,
+                carton_type=packaging.carton_type,
+                current_qty=final_current_qty,
+                preferred_location_id=carton.current_location_id,
+                exclude_carton_id=carton.id,
+            )
+
         carton = self.repository.update(carton, normalized_data)
+        if placement_must_be_updated:
+            if placement is None:
+                self.placement_service.clear_placement(carton)
+            else:
+                self.placement_service.apply_decision(carton, placement)
         self.session.commit()
         self.session.refresh(carton)
         return carton

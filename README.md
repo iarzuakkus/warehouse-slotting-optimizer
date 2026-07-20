@@ -177,6 +177,22 @@ Plan doğruysa veriyi oluşturun:
 python -m scripts.generate_synthetic_data --profile smoke --seed 42 --execute
 ```
 
+Mevcut sentetik veriyi gercek kullanici kayitlarina dokunmadan yeniden uretmek
+icin once silme planini goruntuleyin:
+
+```bash
+python -m scripts.generate_synthetic_data --profile smoke --seed 42 --replace-synthetic
+```
+
+Plan onaylandiktan sonra ayni komutu `--execute` ile calistirin. Temizleme ve
+yeniden uretme ayni transaction icinde yapilir; yalnizca `SYN-*` sinirindaki
+kayitlar hedeflenir. Sentetik raflara veya urunlere sentetik olmayan kayitlar
+bagliysa guvenlik kontrolu islemi durdurur:
+
+```bash
+python -m scripts.generate_synthetic_data --profile smoke --seed 42 --replace-synthetic --execute
+```
+
 `large` profil yanlışlıkla çalıştırılmasın diye ek onay gerektirir:
 
 ```bash

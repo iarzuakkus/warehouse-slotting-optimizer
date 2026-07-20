@@ -1,10 +1,14 @@
 """Koli toplama hareketi endpoint testleri."""
 
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+
+from tests.factories import carton_type_dimensions, create_warehouse_rack
 
 
 def create_pick_context(
     db_client: TestClient,
+    db_session: Session,
     suffix: str,
     allocated_qty: int = 5,
     activate_order: bool = True,
@@ -14,6 +18,7 @@ def create_pick_context(
         json={
             "sku": f"TEST-PICK-PRODUCT-{suffix}",
             "name": "Toplama Test Urunu",
+            "unit_weight_kg": "0.500",
             "is_active": True,
         },
     )
@@ -22,9 +27,7 @@ def create_pick_context(
         json={
             "code": f"TEST-PICK-CT-{suffix}",
             "name": "Toplama Test Koli Tipi",
-            "inner_length_cm": 40,
-            "inner_width_cm": 30,
-            "inner_height_cm": 25,
+            **carton_type_dimensions(),
             "max_weight_kg": 20,
             "is_active": True,
         },
@@ -41,6 +44,11 @@ def create_pick_context(
             "is_default": True,
         },
     )
+    create_warehouse_rack(
+        db_session,
+        aisle=f"TEST-PICK-{suffix}",
+        bay="01",
+    )
     location = db_client.post(
         "/warehouse-locations",
         json={
@@ -48,6 +56,7 @@ def create_pick_context(
             "bay": "01",
             "level": "01",
             "slot": "01",
+            "max_weight_kg": 750,
             "distance_from_dispatch_m": 10,
             "is_active": True,
         },
@@ -114,9 +123,9 @@ def pick_url(order_id: int, line_id: int, allocation_id: int) -> str:
     )
 
 
-def test_pick_operation_lifecycle(db_client: TestClient) -> None:
+def test_pick_operation_lifecycle(db_client: TestClient, db_session: Session) -> None:
     order_id, line_id, allocation_id, carton_id, location_id = (
-        create_pick_context(db_client, "001")
+        create_pick_context(db_client, db_session, "001")
     )
     url = pick_url(order_id, line_id, allocation_id)
 
@@ -160,9 +169,10 @@ def test_pick_operation_lifecycle(db_client: TestClient) -> None:
     assert len(history.json()) == 2
 
 
-def test_rejects_pick_while_order_is_pending(db_client: TestClient) -> None:
+def test_rejects_pick_while_order_is_pending(db_client: TestClient, db_session: Session) -> None:
     order_id, line_id, allocation_id, _, _ = create_pick_context(
         db_client,
+        db_session,
         "002",
         activate_order=False,
     )
@@ -175,9 +185,10 @@ def test_rejects_pick_while_order_is_pending(db_client: TestClient) -> None:
     assert response.status_code == 409
 
 
-def test_rejects_pick_above_allocated_quantity(db_client: TestClient) -> None:
+def test_rejects_pick_above_allocated_quantity(db_client: TestClient, db_session: Session) -> None:
     order_id, line_id, allocation_id, _, _ = create_pick_context(
         db_client,
+        db_session,
         "003",
         allocated_qty=3,
     )
@@ -190,9 +201,10 @@ def test_rejects_pick_above_allocated_quantity(db_client: TestClient) -> None:
     assert response.status_code == 409
 
 
-def test_rejects_pick_from_quarantined_carton(db_client: TestClient) -> None:
+def test_rejects_pick_from_quarantined_carton(db_client: TestClient, db_session: Session) -> None:
     order_id, line_id, allocation_id, carton_id, _ = create_pick_context(
         db_client,
+        db_session,
         "004",
     )
     quarantine = db_client.patch(
@@ -209,8 +221,10 @@ def test_rejects_pick_from_quarantined_carton(db_client: TestClient) -> None:
     assert response.status_code == 409
 
 
-def test_rejects_missing_allocation(db_client: TestClient) -> None:
-    order_id, line_id, _, _, _ = create_pick_context(db_client, "005")
+def test_rejects_missing_allocation(db_client: TestClient, db_session: Session) -> None:
+    order_id, line_id, _, _, _ = create_pick_context(
+        db_client, db_session, "005"
+    )
 
     response = db_client.post(
         pick_url(order_id, line_id, 999999999),

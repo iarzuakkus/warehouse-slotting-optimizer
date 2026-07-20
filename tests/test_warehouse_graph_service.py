@@ -12,6 +12,7 @@ from app.services.warehouse_graph import (
     WarehouseGraphLocationNotFoundError,
     WarehouseGraphService,
 )
+from tests.factories import create_warehouse_rack
 
 
 @pytest.fixture
@@ -110,12 +111,24 @@ def test_rejects_empty_location_collection() -> None:
 def test_loads_only_active_synthetic_locations(
     graph_session: Session,
 ) -> None:
+    active_rack = create_warehouse_rack(
+        graph_session, aisle="SYN-A006", bay="B001"
+    )
+    inactive_rack = create_warehouse_rack(
+        graph_session, aisle="SYN-A007", bay="B001"
+    )
+    manual_rack = create_warehouse_rack(
+        graph_session, aisle="GRAPH-MANUAL", bay="B001"
+    )
     active_location = warehouse_location(501, 6, 1)
     active_location.id = None
+    active_location.rack_id = active_rack.id
     inactive_location = warehouse_location(502, 7, 1)
     inactive_location.id = None
+    inactive_location.rack_id = inactive_rack.id
     inactive_location.is_active = False
     manual_location = WarehouseLocation(
+        rack_id=manual_rack.id,
         aisle="GRAPH-MANUAL",
         bay="B001",
         level="L01",

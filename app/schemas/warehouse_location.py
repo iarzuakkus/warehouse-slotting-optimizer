@@ -68,6 +68,10 @@ class WarehouseLocationRead(WarehouseLocationBase):
     """Veritabanından dönen depo konumu alanları."""
 
     id: int
+    rack_id: int
+    usable_width_cm: Decimal
+    usable_depth_cm: Decimal
+    usable_height_cm: Decimal
     created_at: datetime
     updated_at: datetime
 

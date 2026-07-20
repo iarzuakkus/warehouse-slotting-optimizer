@@ -2,14 +2,14 @@
 
 from fastapi.testclient import TestClient
 
+from tests.factories import carton_type_dimensions
+
 
 def carton_type_payload(code: str, name: str = "Test Kolisi") -> dict[str, object]:
     return {
         "code": code,
         "name": name,
-        "inner_length_cm": 40,
-        "inner_width_cm": 30,
-        "inner_height_cm": 25,
+        **carton_type_dimensions(),
         "max_weight_kg": 20,
         "is_active": True,
     }
@@ -26,6 +26,9 @@ def test_create_carton_type(db_client: TestClient) -> None:
     assert body["id"] > 0
     assert body["code"] == "TEST-CT-001"
     assert body["inner_length_cm"] == "40.00"
+    assert body["outer_length_cm"] == "42.00"
+    assert body["outer_width_cm"] == "32.00"
+    assert body["outer_height_cm"] == "27.00"
     assert body["max_weight_kg"] == "20.000"
 
 
@@ -84,3 +87,38 @@ def test_update_carton_type_rejects_null_dimension(db_client: TestClient) -> Non
     )
 
     assert response.status_code == 422
+
+
+def test_create_carton_type_rejects_outer_dimension_smaller_than_inner(
+    db_client: TestClient,
+) -> None:
+    payload = carton_type_payload("TEST-CT-INVALID-OUTER")
+    payload["outer_length_cm"] = "39.00"
+
+    response = db_client.post("/carton-types", json=payload)
+
+    assert response.status_code == 422
+    assert "outer_length_cm cannot be smaller than inner_length_cm" in str(
+        response.json()
+    )
+
+
+def test_update_carton_type_rejects_incompatible_inner_dimension(
+    db_client: TestClient,
+) -> None:
+    create_response = db_client.post(
+        "/carton-types",
+        json=carton_type_payload("TEST-CT-INVALID-UPDATE"),
+    )
+    assert create_response.status_code == 201
+    carton_type_id = create_response.json()["id"]
+
+    response = db_client.patch(
+        f"/carton-types/{carton_type_id}",
+        json={"inner_length_cm": "43.00"},
+    )
+
+    assert response.status_code == 422
+    assert "outer_length_cm cannot be smaller than inner_length_cm" in str(
+        response.json()
+    )

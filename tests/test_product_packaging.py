@@ -2,6 +2,8 @@
 
 from fastapi.testclient import TestClient
 
+from tests.factories import carton_type_dimensions
+
 
 def create_product(db_client: TestClient, sku: str) -> int:
     response = db_client.post(
@@ -23,9 +25,7 @@ def create_carton_type(db_client: TestClient, code: str) -> int:
         json={
             "code": code,
             "name": "Paketleme Test Kolisi",
-            "inner_length_cm": 40,
-            "inner_width_cm": 30,
-            "inner_height_cm": 25,
+            **carton_type_dimensions(),
             "max_weight_kg": 20,
             "is_active": True,
         },

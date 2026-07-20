@@ -10,6 +10,9 @@ def test_create_product(db_client: TestClient) -> None:
             "sku": "test-crud-001",
             "name": "Test Urunu",
             "unit_weight_kg": 0.52,
+            "unit_length_cm": 12.5,
+            "unit_width_cm": 8,
+            "unit_height_cm": 4.25,
             "is_active": True,
         },
     )
@@ -20,6 +23,9 @@ def test_create_product(db_client: TestClient) -> None:
     assert body["sku"] == "TEST-CRUD-001"
     assert body["name"] == "Test Urunu"
     assert body["unit_weight_kg"] == "0.520"
+    assert body["unit_length_cm"] == "12.50"
+    assert body["unit_width_cm"] == "8.00"
+    assert body["unit_height_cm"] == "4.25"
     assert body["is_active"] is True
 
 
@@ -93,6 +99,42 @@ def test_update_product_rejects_null_name(db_client: TestClient) -> None:
     response = db_client.patch(
         f"/products/{product_id}",
         json={"name": None},
+    )
+
+    assert response.status_code == 422
+
+
+def test_create_product_rejects_non_positive_physical_dimension(
+    db_client: TestClient,
+) -> None:
+    response = db_client.post(
+        "/products",
+        json={
+            "sku": "TEST-INVALID-DIMENSION-001",
+            "name": "Gecersiz Olculu Urun",
+            "unit_weight_kg": 1,
+            "unit_length_cm": 0,
+            "unit_width_cm": 10,
+            "unit_height_cm": 10,
+            "is_active": True,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_create_product_rejects_incomplete_physical_dimensions(
+    db_client: TestClient,
+) -> None:
+    response = db_client.post(
+        "/products",
+        json={
+            "sku": "TEST-INCOMPLETE-DIMENSION-001",
+            "name": "Eksik Olculu Urun",
+            "unit_weight_kg": 1,
+            "unit_length_cm": 10,
+            "is_active": True,
+        },
     )
 
     assert response.status_code == 422

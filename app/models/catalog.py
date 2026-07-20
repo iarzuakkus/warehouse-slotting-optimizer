@@ -17,12 +17,33 @@ class Product(TimestampMixin, Base):
     __tablename__ = "products"
     __table_args__ = (
         CheckConstraint("unit_weight_kg IS NULL OR unit_weight_kg > 0", name="unit_weight_positive"),
+        CheckConstraint(
+            "unit_length_cm IS NULL OR unit_length_cm > 0",
+            name="unit_length_positive",
+        ),
+        CheckConstraint(
+            "unit_width_cm IS NULL OR unit_width_cm > 0",
+            name="unit_width_positive",
+        ),
+        CheckConstraint(
+            "unit_height_cm IS NULL OR unit_height_cm > 0",
+            name="unit_height_positive",
+        ),
+        CheckConstraint(
+            "(unit_length_cm IS NULL AND unit_width_cm IS NULL AND unit_height_cm IS NULL) "
+            "OR (unit_length_cm IS NOT NULL AND unit_width_cm IS NOT NULL "
+            "AND unit_height_cm IS NOT NULL)",
+            name="unit_dimensions_complete",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     sku: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     unit_weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
+    unit_length_cm: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    unit_width_cm: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    unit_height_cm: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"), nullable=False)
 
     packaging_options: Mapped[list["ProductPackaging"]] = relationship(
@@ -37,6 +58,21 @@ class CartonType(TimestampMixin, Base):
         CheckConstraint("inner_length_cm > 0", name="inner_length_positive"),
         CheckConstraint("inner_width_cm > 0", name="inner_width_positive"),
         CheckConstraint("inner_height_cm > 0", name="inner_height_positive"),
+        CheckConstraint("outer_length_cm > 0", name="outer_length_positive"),
+        CheckConstraint("outer_width_cm > 0", name="outer_width_positive"),
+        CheckConstraint("outer_height_cm > 0", name="outer_height_positive"),
+        CheckConstraint(
+            "outer_length_cm >= inner_length_cm",
+            name="outer_length_not_smaller_than_inner",
+        ),
+        CheckConstraint(
+            "outer_width_cm >= inner_width_cm",
+            name="outer_width_not_smaller_than_inner",
+        ),
+        CheckConstraint(
+            "outer_height_cm >= inner_height_cm",
+            name="outer_height_not_smaller_than_inner",
+        ),
         CheckConstraint("max_weight_kg > 0", name="max_weight_positive"),
     )
 
@@ -46,6 +82,9 @@ class CartonType(TimestampMixin, Base):
     inner_length_cm: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     inner_width_cm: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     inner_height_cm: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    outer_length_cm: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    outer_width_cm: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    outer_height_cm: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     max_weight_kg: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"), nullable=False)
 

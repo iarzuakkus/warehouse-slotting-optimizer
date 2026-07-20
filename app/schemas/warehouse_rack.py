@@ -12,6 +12,9 @@ class WarehouseRackProductRead(BaseModel):
     sku: str
     name: str
     unit_weight_kg: Decimal | None
+    unit_length_cm: Decimal | None
+    unit_width_cm: Decimal | None
+    unit_height_cm: Decimal | None
 
 
 class WarehouseRackPackagingRead(BaseModel):
@@ -68,3 +71,51 @@ class WarehouseRackRead(WarehouseRackSummaryRead):
     """Detailed locations that belong to one aisle and bay."""
 
     locations: list[WarehouseRackLocationRead] = Field(min_length=1)
+
+
+class WarehouseRackSceneCartonRead(BaseModel):
+    """Physical carton dimensions required by the 3D warehouse scene."""
+
+    id: int
+    carton_number: str
+    carton_type_code: str
+    outer_length_cm: Decimal
+    outer_width_cm: Decimal
+    outer_height_cm: Decimal
+    position_x_cm: Decimal
+    position_y_cm: Decimal
+    position_z_cm: Decimal
+    rotation_degrees: int
+
+
+class WarehouseRackSceneLocationRead(BaseModel):
+    """Lightweight location representation for the 3D warehouse scene."""
+
+    id: int
+    level: str
+    slot: str
+    is_active: bool
+    usable_width_cm: Decimal
+    usable_depth_cm: Decimal
+    usable_height_cm: Decimal
+    max_weight_kg: Decimal | None
+    used_weight_kg: Decimal | None
+    weight_utilization_percent: Decimal | None
+    volume_utilization_percent: Decimal
+    cartons: list[WarehouseRackSceneCartonRead]
+
+
+class WarehouseRackSceneRead(BaseModel):
+    """One rack and its physical contents for the 3D warehouse scene."""
+
+    aisle: str = Field(min_length=1, max_length=30)
+    bay: str = Field(min_length=1, max_length=30)
+    width_cm: Decimal
+    depth_cm: Decimal
+    total_height_cm: Decimal
+    level_clear_height_cm: Decimal
+    level_count: int = Field(ge=1)
+    slots_per_level: int = Field(ge=1)
+    location_count: int = Field(ge=0)
+    active_location_count: int = Field(ge=0)
+    locations: list[WarehouseRackSceneLocationRead]

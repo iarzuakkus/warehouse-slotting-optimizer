@@ -15,9 +15,40 @@ class ProductBase(BaseModel):
         max_digits=12,
         decimal_places=3,
     )
+    unit_length_cm: Decimal | None = Field(
+        default=None,
+        gt=0,
+        max_digits=10,
+        decimal_places=2,
+    )
+    unit_width_cm: Decimal | None = Field(
+        default=None,
+        gt=0,
+        max_digits=10,
+        decimal_places=2,
+    )
+    unit_height_cm: Decimal | None = Field(
+        default=None,
+        gt=0,
+        max_digits=10,
+        decimal_places=2,
+    )
     is_active: bool = True
 
     model_config = ConfigDict(str_strip_whitespace=True)
+
+    @model_validator(mode="after")
+    def validate_complete_dimensions(self) -> "ProductBase":
+        dimensions = (
+            self.unit_length_cm,
+            self.unit_width_cm,
+            self.unit_height_cm,
+        )
+        if any(value is not None for value in dimensions) and not all(
+            value is not None for value in dimensions
+        ):
+            raise ValueError("Product dimensions must be provided together")
+        return self
 
 
 class ProductCreate(ProductBase):
@@ -35,6 +66,24 @@ class ProductUpdate(BaseModel):
         max_digits=12,
         decimal_places=3,
     )
+    unit_length_cm: Decimal | None = Field(
+        default=None,
+        gt=0,
+        max_digits=10,
+        decimal_places=2,
+    )
+    unit_width_cm: Decimal | None = Field(
+        default=None,
+        gt=0,
+        max_digits=10,
+        decimal_places=2,
+    )
+    unit_height_cm: Decimal | None = Field(
+        default=None,
+        gt=0,
+        max_digits=10,
+        decimal_places=2,
+    )
     is_active: bool | None = None
 
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -45,6 +94,24 @@ class ProductUpdate(BaseModel):
         for field in required_fields:
             if field in self.model_fields_set and getattr(self, field) is None:
                 raise ValueError(f"{field} cannot be null")
+        dimension_fields = {
+            "unit_length_cm",
+            "unit_width_cm",
+            "unit_height_cm",
+        }
+        provided_dimension_fields = dimension_fields & self.model_fields_set
+        if provided_dimension_fields and provided_dimension_fields != dimension_fields:
+            raise ValueError("Product dimensions must be updated together")
+        if provided_dimension_fields:
+            dimensions = (
+                self.unit_length_cm,
+                self.unit_width_cm,
+                self.unit_height_cm,
+            )
+            if any(value is not None for value in dimensions) and not all(
+                value is not None for value in dimensions
+            ):
+                raise ValueError("Product dimensions must be provided together")
         return self
 
 

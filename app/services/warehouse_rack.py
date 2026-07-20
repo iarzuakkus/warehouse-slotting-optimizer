@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.models.inventory import Carton, WarehouseLocation
+from app.models.inventory import Carton, WarehouseLocation, WarehouseRack
 from app.repositories.warehouse_rack import WarehouseRackRepository
 from app.schemas.warehouse_rack import (
     WarehouseRackCartonRead,
@@ -13,6 +13,9 @@ from app.schemas.warehouse_rack import (
     WarehouseRackPackagingRead,
     WarehouseRackProductRead,
     WarehouseRackRead,
+    WarehouseRackSceneCartonRead,
+    WarehouseRackSceneLocationRead,
+    WarehouseRackSceneRead,
     WarehouseRackSummaryRead,
 )
 
@@ -33,34 +36,40 @@ class WarehouseRackService:
         offset: int = 0,
         limit: int = 100,
     ) -> list[WarehouseRackSummaryRead]:
-        locations = self.repository.list_rack_locations(offset=offset, limit=limit)
-        locations_by_rack: dict[tuple[str, str], list[WarehouseLocation]] = {}
-        for location in locations:
-            locations_by_rack.setdefault(
-                (location.aisle, location.bay),
-                [],
-            ).append(location)
+        racks = self.repository.list_racks(offset=offset, limit=limit)
         return [
-            self._build_summary(rack_locations)
-            for rack_locations in locations_by_rack.values()
+            self._build_summary(rack)
+            for rack in racks
+            if rack.locations
         ]
+
+    def list_scene_racks(
+        self,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[WarehouseRackSceneRead]:
+        racks = self.repository.list_racks(offset=offset, limit=limit)
+        return [self._build_scene_rack(rack) for rack in racks]
 
     def get_rack(self, aisle: str, bay: str) -> WarehouseRackRead:
         normalized_aisle = aisle.strip().upper()
         normalized_bay = bay.strip().upper()
-        locations = self.repository.get_locations(normalized_aisle, normalized_bay)
-        if not locations and re.fullmatch(r"A\d+", normalized_aisle):
+        rack = self.repository.get_rack(normalized_aisle, normalized_bay)
+        if rack is None and re.fullmatch(r"A\d+", normalized_aisle):
             synthetic_aisle = f"SYN-{normalized_aisle}"
-            locations = self.repository.get_locations(synthetic_aisle, normalized_bay)
-            if locations:
+            rack = self.repository.get_rack(synthetic_aisle, normalized_bay)
+            if rack is not None:
                 normalized_aisle = synthetic_aisle
-        if not locations:
+        if rack is None or not rack.locations:
             raise WarehouseRackNotFoundError(
                 f"Warehouse rack {normalized_aisle}/{normalized_bay} not found"
             )
 
-        summary = self._build_summary(locations)
-        location_details = [self._build_location(location) for location in locations]
+        summary = self._build_summary(rack)
+        location_details = [
+            self._build_location(location)
+            for location in self._sorted_locations(rack)
+        ]
 
         return WarehouseRackRead(
             **summary.model_dump(),
@@ -69,8 +78,9 @@ class WarehouseRackService:
 
     def _build_summary(
         self,
-        locations: list[WarehouseLocation],
+        rack: WarehouseRack,
     ) -> WarehouseRackSummaryRead:
+        locations = rack.locations
         cartons = [
             carton
             for location in locations
@@ -84,9 +94,9 @@ class WarehouseRackService:
         )
 
         return WarehouseRackSummaryRead(
-            aisle=locations[0].aisle,
-            bay=locations[0].bay,
-            level_count=len({location.level for location in locations}),
+            aisle=rack.aisle,
+            bay=rack.bay,
+            level_count=rack.level_count,
             location_count=len(locations),
             active_location_count=sum(location.is_active for location in locations),
             carton_count=len(cartons),
@@ -131,6 +141,114 @@ class WarehouseRackService:
             ],
         )
 
+    def _build_scene_rack(
+        self,
+        rack: WarehouseRack,
+    ) -> WarehouseRackSceneRead:
+        locations = self._sorted_locations(rack)
+        return WarehouseRackSceneRead(
+            aisle=rack.aisle,
+            bay=rack.bay,
+            width_cm=rack.width_cm,
+            depth_cm=rack.depth_cm,
+            total_height_cm=rack.total_height_cm,
+            level_clear_height_cm=rack.level_clear_height_cm,
+            level_count=rack.level_count,
+            slots_per_level=rack.slots_per_level,
+            location_count=len(locations),
+            active_location_count=sum(location.is_active for location in locations),
+            locations=[
+                self._build_scene_location(location) for location in locations
+            ],
+        )
+
+    def _build_scene_location(
+        self,
+        location: WarehouseLocation,
+    ) -> WarehouseRackSceneLocationRead:
+        used_weight = self._used_weight(location.current_cartons)
+        positioned_cartons = [
+            carton
+            for carton in location.current_cartons
+            if self._has_complete_placement(carton)
+        ]
+        used_volume = sum(
+            (
+                carton.product_packaging.carton_type.outer_length_cm
+                * carton.product_packaging.carton_type.outer_width_cm
+                * carton.product_packaging.carton_type.outer_height_cm
+                for carton in positioned_cartons
+            ),
+            start=Decimal("0"),
+        )
+        usable_volume = (
+            location.usable_width_cm
+            * location.usable_depth_cm
+            * location.usable_height_cm
+        )
+        return WarehouseRackSceneLocationRead(
+            id=location.id,
+            level=location.level,
+            slot=location.slot,
+            is_active=location.is_active,
+            usable_width_cm=location.usable_width_cm,
+            usable_depth_cm=location.usable_depth_cm,
+            usable_height_cm=location.usable_height_cm,
+            max_weight_kg=location.max_weight_kg,
+            used_weight_kg=self._quantize_weight(used_weight),
+            weight_utilization_percent=self._utilization_percent(
+                used_weight,
+                location.max_weight_kg,
+            ),
+            volume_utilization_percent=(
+                (used_volume / usable_volume) * Decimal("100")
+            ).quantize(self.percent_quantum),
+            cartons=[
+                WarehouseRackSceneCartonRead(
+                    id=carton.id,
+                    carton_number=carton.carton_number,
+                    carton_type_code=carton.product_packaging.carton_type.code,
+                    outer_length_cm=(
+                        carton.product_packaging.carton_type.outer_length_cm
+                    ),
+                    outer_width_cm=(
+                        carton.product_packaging.carton_type.outer_width_cm
+                    ),
+                    outer_height_cm=(
+                        carton.product_packaging.carton_type.outer_height_cm
+                    ),
+                    position_x_cm=carton.position_x_cm,
+                    position_y_cm=carton.position_y_cm,
+                    position_z_cm=carton.position_z_cm,
+                    rotation_degrees=carton.rotation_degrees,
+                )
+                for carton in sorted(
+                    positioned_cartons,
+                    key=lambda item: (item.carton_number, item.id),
+                )
+            ],
+        )
+
+    @staticmethod
+    def _sorted_locations(rack: WarehouseRack) -> list[WarehouseLocation]:
+        return sorted(
+            rack.locations,
+            key=lambda location: (
+                location.level,
+                location.slot,
+                location.id,
+            ),
+        )
+
+    @staticmethod
+    def _has_complete_placement(carton: Carton) -> bool:
+        return (
+            carton.position_x_cm is not None
+            and carton.position_y_cm is not None
+            and carton.position_z_cm is not None
+            and carton.rotation_degrees is not None
+        )
+
     @staticmethod
     def _build_carton(carton: Carton) -> WarehouseRackCartonRead:
         packaging = carton.product_packaging
@@ -149,6 +267,9 @@ class WarehouseRackService:
                 sku=product.sku,
                 name=product.name,
                 unit_weight_kg=product.unit_weight_kg,
+                unit_length_cm=product.unit_length_cm,
+                unit_width_cm=product.unit_width_cm,
+                unit_height_cm=product.unit_height_cm,
             ),
             packaging=WarehouseRackPackagingRead(
                 id=packaging.id,

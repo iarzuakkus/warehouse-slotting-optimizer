@@ -11,6 +11,7 @@ from app.repositories.optimization_assignment import (
 from app.repositories.optimization_run import OptimizationRunRepository
 from app.repositories.warehouse_location import WarehouseLocationRepository
 from app.schemas.optimization_assignment import OptimizationAssignmentCreate
+from app.services.carton_placement import CartonPlacementService
 
 
 class OptimizationAssignmentNotFoundError(Exception):
@@ -36,6 +37,7 @@ class OptimizationAssignmentService:
         self.run_repository = OptimizationRunRepository(session)
         self.carton_repository = CartonRepository(session)
         self.location_repository = WarehouseLocationRepository(session)
+        self.placement_service = CartonPlacementService(session)
 
     def _get_run(self, run_id: int) -> OptimizationRun:
         run = self.run_repository.get_by_id(run_id)
@@ -117,12 +119,39 @@ class OptimizationAssignmentService:
                 "Carton already has an assignment in this optimization run"
             )
 
+        packaging = carton.product_packaging
+        excluded_location_ids = (
+            {carton.current_location_id}
+            if carton.current_location_id is not None
+            else set()
+        )
+        placement = self.placement_service.find_available_placement(
+            product=packaging.product,
+            carton_type=packaging.carton_type,
+            current_qty=carton.current_qty,
+            preferred_location_id=data.to_location_id,
+            exclude_carton_id=carton.id,
+            excluded_location_ids=excluded_location_ids,
+        )
+        if placement is None:
+            raise OptimizationAssignmentConflictError(
+                "No warehouse location has enough physical and weight capacity"
+            )
+        effective_data = data.model_copy(
+            update={"to_location_id": placement.location_id}
+        )
+
         try:
             assignment = self.repository.create(
                 run_id=run.id,
                 from_location_id=carton.current_location_id,
-                data=data,
+                data=effective_data,
             )
+            assignment.proposed_position_x_cm = placement.position_x_cm
+            assignment.proposed_position_y_cm = placement.position_y_cm
+            assignment.proposed_position_z_cm = placement.position_z_cm
+            assignment.proposed_rotation_degrees = placement.rotation_degrees
+            self.session.flush()
             self.session.commit()
             self.session.refresh(assignment)
             return assignment

@@ -1,6 +1,7 @@
 """Fiziksel koli API istek ve cevap şemaları."""
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
@@ -54,6 +55,10 @@ class CartonRead(BaseModel):
     carton_number: str
     product_packaging_id: int
     current_location_id: int | None
+    position_x_cm: Decimal | None
+    position_y_cm: Decimal | None
+    position_z_cm: Decimal | None
+    rotation_degrees: int | None
     capacity_qty: int
     current_qty: int
     reserved_qty: int

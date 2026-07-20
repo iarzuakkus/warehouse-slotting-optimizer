@@ -46,6 +46,34 @@ class OptimizationAssignment(Base):
     __table_args__ = (
         UniqueConstraint("optimization_run_id", "carton_id"),
         CheckConstraint("from_location_id <> to_location_id", name="locations_differ"),
+        CheckConstraint(
+            "proposed_position_x_cm IS NULL OR proposed_position_x_cm >= 0",
+            name="proposed_position_x_non_negative",
+        ),
+        CheckConstraint(
+            "proposed_position_y_cm IS NULL OR proposed_position_y_cm >= 0",
+            name="proposed_position_y_non_negative",
+        ),
+        CheckConstraint(
+            "proposed_position_z_cm IS NULL OR proposed_position_z_cm >= 0",
+            name="proposed_position_z_non_negative",
+        ),
+        CheckConstraint(
+            "proposed_rotation_degrees IS NULL "
+            "OR proposed_rotation_degrees IN (0, 90)",
+            name="proposed_rotation_valid",
+        ),
+        CheckConstraint(
+            "(proposed_position_x_cm IS NULL "
+            "AND proposed_position_y_cm IS NULL "
+            "AND proposed_position_z_cm IS NULL "
+            "AND proposed_rotation_degrees IS NULL) "
+            "OR (proposed_position_x_cm IS NOT NULL "
+            "AND proposed_position_y_cm IS NOT NULL "
+            "AND proposed_position_z_cm IS NOT NULL "
+            "AND proposed_rotation_degrees IS NOT NULL)",
+            name="proposed_placement_complete",
+        ),
         Index("ix_optimization_assignments_to_location_id", "to_location_id"),
     )
 
@@ -62,6 +90,10 @@ class OptimizationAssignment(Base):
     to_location_id: Mapped[int] = mapped_column(
         ForeignKey("warehouse_locations.id", ondelete="RESTRICT"), nullable=False
     )
+    proposed_position_x_cm: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    proposed_position_y_cm: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    proposed_position_z_cm: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    proposed_rotation_degrees: Mapped[int | None] = mapped_column()
     assignment_score: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
 
     optimization_run: Mapped["OptimizationRun"] = relationship(back_populates="assignments")

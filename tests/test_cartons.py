@@ -1,10 +1,14 @@
 """Fiziksel koli endpoint testleri."""
 
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+
+from tests.factories import carton_type_dimensions, create_warehouse_rack
 
 
 def create_carton_dependencies(
     db_client: TestClient,
+    db_session: Session,
     suffix: str,
     units_per_carton: int = 24,
 ) -> tuple[int, int]:
@@ -24,9 +28,7 @@ def create_carton_dependencies(
         json={
             "code": f"TEST-CARTON-CT-{suffix}",
             "name": "Fiziksel Koli Test Tipi",
-            "inner_length_cm": 40,
-            "inner_width_cm": 30,
-            "inner_height_cm": 25,
+            **carton_type_dimensions(),
             "max_weight_kg": 20,
             "is_active": True,
         },
@@ -44,6 +46,11 @@ def create_carton_dependencies(
     )
     assert packaging_response.status_code == 201
 
+    create_warehouse_rack(
+        db_session,
+        aisle=f"TEST-{suffix}",
+        bay="01",
+    )
     location_response = db_client.post(
         "/warehouse-locations",
         json={
@@ -79,8 +86,15 @@ def carton_payload(
     }
 
 
-def test_create_carton_uses_packaging_capacity(db_client: TestClient) -> None:
-    packaging_id, location_id = create_carton_dependencies(db_client, "001")
+def test_create_carton_uses_packaging_capacity(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    packaging_id, location_id = create_carton_dependencies(
+        db_client,
+        db_session,
+        "001",
+    )
     response = db_client.post(
         "/cartons",
         json=carton_payload(
@@ -100,11 +114,19 @@ def test_create_carton_uses_packaging_capacity(db_client: TestClient) -> None:
     assert body["reserved_qty"] == 5
     assert body["available_qty"] == 15
     assert body["status"] == "reserved"
+    assert body["position_x_cm"] == "0.00"
+    assert body["position_y_cm"] == "0.00"
+    assert body["position_z_cm"] == "0.00"
+    assert body["rotation_degrees"] == 0
 
 
-def test_create_carton_rejects_capacity_overflow(db_client: TestClient) -> None:
+def test_create_carton_rejects_capacity_overflow(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
     packaging_id, location_id = create_carton_dependencies(
         db_client,
+        db_session,
         "002",
         units_per_carton=12,
     )
@@ -122,8 +144,15 @@ def test_create_carton_rejects_capacity_overflow(db_client: TestClient) -> None:
     assert response.json()["detail"] == "current_qty cannot exceed carton capacity 12"
 
 
-def test_create_carton_rejects_duplicate_number(db_client: TestClient) -> None:
-    packaging_id, location_id = create_carton_dependencies(db_client, "003")
+def test_create_carton_rejects_duplicate_number(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    packaging_id, location_id = create_carton_dependencies(
+        db_client,
+        db_session,
+        "003",
+    )
     payload = carton_payload("test-koli-003", packaging_id, location_id)
 
     first_response = db_client.post("/cartons", json=payload)
@@ -134,8 +163,15 @@ def test_create_carton_rejects_duplicate_number(db_client: TestClient) -> None:
     assert duplicate_response.status_code == 409
 
 
-def test_carton_quantity_and_status_lifecycle(db_client: TestClient) -> None:
-    packaging_id, location_id = create_carton_dependencies(db_client, "004")
+def test_carton_quantity_and_status_lifecycle(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    packaging_id, location_id = create_carton_dependencies(
+        db_client,
+        db_session,
+        "004",
+    )
     create_response = db_client.post(
         "/cartons",
         json=carton_payload("TEST-KOLI-004", packaging_id, location_id),
@@ -168,8 +204,15 @@ def test_carton_quantity_and_status_lifecycle(db_client: TestClient) -> None:
     assert release_response.json()["status"] == "depleted"
 
 
-def test_list_cartons_filters_status_and_location(db_client: TestClient) -> None:
-    packaging_id, location_id = create_carton_dependencies(db_client, "005")
+def test_list_cartons_filters_status_and_location(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    packaging_id, location_id = create_carton_dependencies(
+        db_client,
+        db_session,
+        "005",
+    )
     create_response = db_client.post(
         "/cartons",
         json=carton_payload(
