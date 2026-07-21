@@ -143,6 +143,39 @@ class WarehouseRackRepository:
         )
         return list(self.session.scalars(statement))
 
+    def list_racks_for_simulation(
+        self,
+        aisle_filter: list[str] | None = None,
+        level_filter: list[str] | None = None,
+    ) -> list[WarehouseRack]:
+        """Load a stable warehouse snapshot without changing real placement."""
+        locations = WarehouseRack.locations
+        if level_filter is not None:
+            locations = locations.and_(
+                WarehouseLocation.level.in_(level_filter)
+            )
+
+        statement = (
+            select(WarehouseRack)
+            .options(
+                selectinload(locations)
+                .selectinload(WarehouseLocation.current_cartons)
+                .selectinload(Carton.product_packaging)
+                .joinedload(ProductPackaging.product),
+                selectinload(locations)
+                .selectinload(WarehouseLocation.current_cartons)
+                .selectinload(Carton.product_packaging)
+                .joinedload(ProductPackaging.carton_type),
+            )
+            .execution_options(populate_existing=True)
+            .order_by(WarehouseRack.aisle, WarehouseRack.bay)
+        )
+        if aisle_filter is not None:
+            statement = statement.where(
+                WarehouseRack.aisle.in_(aisle_filter)
+            )
+        return list(self.session.scalars(statement))
+
     def list_rack_locations(
         self,
         offset: int = 0,

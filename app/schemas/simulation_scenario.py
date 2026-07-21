@@ -1,0 +1,179 @@
+"""Simulation scenario API request and response schemas."""
+
+from datetime import datetime
+from decimal import Decimal
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+SimulationScenarioStatus = Literal[
+    "pending",
+    "running",
+    "completed",
+    "failed",
+    "cancelled",
+]
+SimulationAssignmentStatus = Literal["placed", "unplaced"]
+
+
+class SimulationObjectiveWeights(BaseModel):
+    """Weights for soft objectives; hard physical rules are not weighted."""
+
+    same_sku_location: Decimal = Field(default=Decimal("8"), ge=0)
+    same_rack: Decimal = Field(default=Decimal("4"), ge=0)
+    nearby_aisle: Decimal = Field(default=Decimal("2"), ge=0)
+    lower_level_for_heavy: Decimal = Field(default=Decimal("5"), ge=0)
+    dispatch_distance: Decimal = Field(default=Decimal("7"), ge=0)
+    co_shipment_proximity: Decimal = Field(default=Decimal("3"), ge=0)
+    location_consolidation: Decimal = Field(default=Decimal("4"), ge=0)
+    split_sku: Decimal = Field(default=Decimal("6"), ge=0)
+    moves: Decimal = Field(default=Decimal("5"), ge=0)
+    volume_utilization: Decimal = Field(default=Decimal("4"), ge=0)
+
+    @model_validator(mode="after")
+    def require_an_active_objective(self) -> "SimulationObjectiveWeights":
+        if not any(value > 0 for value in self.__dict__.values()):
+            raise ValueError("at least one objective weight must be greater than zero")
+        return self
+
+
+class SimulationScenarioParameters(BaseModel):
+    """Configurable scenario behavior stored in OptimizationRun.parameters."""
+
+    group_same_sku: bool = True
+    prefer_lower_levels_for_heavy_cartons: bool = True
+    minimize_dispatch_distance: bool = True
+    minimize_moves: bool = True
+    improve_volume_utilization: bool = True
+    objective_weights: SimulationObjectiveWeights = Field(
+        default_factory=SimulationObjectiveWeights
+    )
+    aisle_filter: list[str] | None = Field(default=None, min_length=1)
+    level_filter: list[str] | None = Field(default=None, min_length=1)
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+
+class SimulationScenarioCreate(SimulationScenarioParameters):
+    name: str = Field(min_length=1, max_length=200)
+    seed: int = Field(default=0, ge=0, le=9_223_372_036_854_775_807)
+    algorithm_name: str = Field(
+        default="deterministic_slotting_v1",
+        min_length=1,
+        max_length=100,
+    )
+
+
+class SimulationScenarioUpdate(BaseModel):
+    """Editable draft fields; completed scenarios remain immutable in service."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    seed: int | None = Field(
+        default=None,
+        ge=0,
+        le=9_223_372_036_854_775_807,
+    )
+    algorithm_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+    )
+    group_same_sku: bool | None = None
+    prefer_lower_levels_for_heavy_cartons: bool | None = None
+    minimize_dispatch_distance: bool | None = None
+    minimize_moves: bool | None = None
+    improve_volume_utilization: bool | None = None
+    objective_weights: SimulationObjectiveWeights | None = None
+    aisle_filter: list[str] | None = Field(default=None, min_length=1)
+    level_filter: list[str] | None = Field(default=None, min_length=1)
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    @model_validator(mode="after")
+    def reject_explicit_null_values(self) -> "SimulationScenarioUpdate":
+        null_fields = [
+            field_name
+            for field_name in self.model_fields_set
+            if getattr(self, field_name) is None
+        ]
+        if null_fields:
+            joined_fields = ", ".join(sorted(null_fields))
+            raise ValueError(f"scenario update fields cannot be null: {joined_fields}")
+        return self
+
+
+class SimulationMetricSet(BaseModel):
+    total_dispatch_distance: Decimal = Field(ge=0)
+    average_dispatch_distance: Decimal = Field(ge=0)
+    weight_utilization_percent: Decimal | None = Field(default=None, ge=0)
+    volume_utilization_percent: Decimal = Field(ge=0)
+    used_location_count: int = Field(ge=0)
+    split_sku_count: int = Field(ge=0)
+    moved_carton_count: int = Field(ge=0)
+    unplaced_carton_count: int = Field(ge=0)
+    objective_score: Decimal
+
+
+class SimulationScenarioResultRead(BaseModel):
+    current: SimulationMetricSet
+    proposed: SimulationMetricSet
+    objective_improvement_percent: Decimal | None
+    estimated_duration_seconds: Decimal = Field(ge=0)
+    total_movement_distance_m: Decimal = Field(ge=0)
+
+
+class SimulationScenarioRead(BaseModel):
+    id: int
+    name: str
+    seed: int
+    algorithm_name: str
+    status: SimulationScenarioStatus
+    progress_percent: Decimal = Field(ge=0, le=100)
+    parameters: SimulationScenarioParameters
+    result: SimulationScenarioResultRead | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    error_message: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SimulationPathPointRead(BaseModel):
+    sequence: int = Field(ge=0)
+    node_id: str = Field(min_length=1)
+    x: Decimal
+    y: Decimal
+
+
+class SimulationMoveRead(BaseModel):
+    id: int
+    sequence: int = Field(gt=0)
+    result_status: SimulationAssignmentStatus
+    carton_id: int
+    carton_number: str
+    product_id: int
+    sku: str
+    from_location_id: int | None
+    to_location_id: int | None
+    from_position_x_cm: Decimal | None
+    from_position_y_cm: Decimal | None
+    from_position_z_cm: Decimal | None
+    from_rotation_degrees: int | None
+    proposed_position_x_cm: Decimal | None
+    proposed_position_y_cm: Decimal | None
+    proposed_position_z_cm: Decimal | None
+    proposed_rotation_degrees: int | None
+    assignment_score: Decimal | None
+    estimated_duration_seconds: Decimal | None = Field(default=None, ge=0)
+    travel_distance_m: Decimal | None = Field(default=None, ge=0)
+    path: list[SimulationPathPointRead]
+    reasons: list[str]
+    unplaced_reason: str | None
+
+
+class SimulationMoveListRead(BaseModel):
+    scenario_id: int
+    move_count: int = Field(ge=0)
+    unplaced_count: int = Field(ge=0)
+    moves: list[SimulationMoveRead]

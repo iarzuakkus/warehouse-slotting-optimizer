@@ -14,6 +14,7 @@ from app.api.routes.optimization_runs import router as optimization_runs_router
 from app.api.routes.pick_operations import router as pick_operations_router
 from app.api.routes.product_packaging import router as product_packaging_router
 from app.api.routes.products import router as products_router
+from app.api.routes.simulation_scenarios import router as simulation_scenarios_router
 from app.api.routes.warehouse_graph import router as warehouse_graph_router
 from app.api.routes.warehouse_locations import router as warehouse_locations_router
 from app.api.routes.warehouse_racks import router as warehouse_racks_router
@@ -35,5 +36,6 @@ app.include_router(pick_operations_router)
 app.include_router(carton_location_history_router)
 app.include_router(optimization_runs_router)
 app.include_router(optimization_assignments_router)
+app.include_router(simulation_scenarios_router)
 
 # python -m uvicorn app.main:app --reload
