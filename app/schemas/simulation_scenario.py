@@ -15,6 +15,8 @@ SimulationScenarioStatus = Literal[
     "cancelled",
 ]
 SimulationAssignmentStatus = Literal["placed", "unplaced"]
+SimulationEquipmentType = Literal["cart", "pallet_jack", "forklift"]
+SimulationMoveBatchStopType = Literal["pickup", "dropoff"]
 
 
 class SimulationObjectiveWeights(BaseModel):
@@ -46,6 +48,20 @@ class SimulationScenarioParameters(BaseModel):
     minimize_dispatch_distance: bool = True
     minimize_moves: bool = True
     improve_volume_utilization: bool = True
+    equipment_type: SimulationEquipmentType = "cart"
+    max_batch_weight_kg: Decimal = Field(
+        default=Decimal("250"),
+        gt=0,
+        max_digits=12,
+        decimal_places=3,
+    )
+    max_batch_volume_m3: Decimal = Field(
+        default=Decimal("1.2"),
+        gt=0,
+        max_digits=12,
+        decimal_places=6,
+    )
+    max_cartons_per_batch: int = Field(default=12, ge=1)
     objective_weights: SimulationObjectiveWeights = Field(
         default_factory=SimulationObjectiveWeights
     )
@@ -84,6 +100,20 @@ class SimulationScenarioUpdate(BaseModel):
     minimize_dispatch_distance: bool | None = None
     minimize_moves: bool | None = None
     improve_volume_utilization: bool | None = None
+    equipment_type: SimulationEquipmentType | None = None
+    max_batch_weight_kg: Decimal | None = Field(
+        default=None,
+        gt=0,
+        max_digits=12,
+        decimal_places=3,
+    )
+    max_batch_volume_m3: Decimal | None = Field(
+        default=None,
+        gt=0,
+        max_digits=12,
+        decimal_places=6,
+    )
+    max_cartons_per_batch: int | None = Field(default=None, ge=1)
     objective_weights: SimulationObjectiveWeights | None = None
     aisle_filter: list[str] | None = Field(default=None, min_length=1)
     level_filter: list[str] | None = Field(default=None, min_length=1)
@@ -177,3 +207,69 @@ class SimulationMoveListRead(BaseModel):
     move_count: int = Field(ge=0)
     unplaced_count: int = Field(ge=0)
     moves: list[SimulationMoveRead]
+
+
+class SimulationMoveBatchStopRead(BaseModel):
+    sequence: int = Field(gt=0)
+    type: SimulationMoveBatchStopType
+    location_id: int = Field(gt=0)
+    carton_ids: list[int] = Field(min_length=1)
+
+
+class SimulationMoveBatchItemRead(BaseModel):
+    move_sequence: int = Field(gt=0)
+    carton_id: int = Field(gt=0)
+    carton_number: str = Field(min_length=1)
+    sku: str = Field(min_length=1)
+    weight_kg: Decimal = Field(ge=0)
+    volume_m3: Decimal = Field(gt=0)
+    from_location_id: int | None = Field(default=None, gt=0)
+    to_location_id: int = Field(gt=0)
+
+
+class SimulationMoveBatchValidationRead(BaseModel):
+    move_sequence: int = Field(gt=0)
+    carton_id: int = Field(gt=0)
+    code: Literal[
+        "max_batch_weight_exceeded",
+        "max_batch_volume_exceeded",
+    ]
+    message: str = Field(min_length=1)
+
+
+class SimulationMoveBatchRead(BaseModel):
+    sequence: int = Field(gt=0)
+    equipment_type: SimulationEquipmentType
+    carton_count: int = Field(ge=1)
+    total_weight_kg: Decimal = Field(ge=0)
+    total_volume_m3: Decimal = Field(gt=0)
+    estimated_distance_m: Decimal = Field(ge=0)
+    estimated_duration_seconds: Decimal = Field(ge=0)
+    capacity_utilization_percent: Decimal = Field(ge=0, le=100)
+    move_sequences: list[int]
+    staged_move_sequences: list[int] = Field(default_factory=list)
+    finalized_move_sequences: list[int] = Field(default_factory=list)
+    items: list[SimulationMoveBatchItemRead] = Field(min_length=1)
+    stops: list[SimulationMoveBatchStopRead] = Field(min_length=1)
+    reasons: list[str]
+    requires_staging_buffer: bool = False
+
+
+class SimulationMoveBatchListRead(BaseModel):
+    scenario_id: int = Field(gt=0)
+    equipment_type: SimulationEquipmentType
+    batch_count: int = Field(ge=0)
+    carton_move_count: int = Field(ge=0)
+    operational_distance_m: Decimal = Field(ge=0)
+    individual_distance_m: Decimal = Field(ge=0)
+    estimated_duration_seconds: Decimal = Field(ge=0)
+    capacity_utilization_percent: Decimal = Field(ge=0, le=100)
+    requires_staging_buffer: bool = False
+    staging_move_sequences: list[int] = Field(default_factory=list)
+    batches: list[SimulationMoveBatchRead]
+    unbatched_items: list[SimulationMoveBatchItemRead] = Field(
+        default_factory=list
+    )
+    validation_errors: list[SimulationMoveBatchValidationRead] = Field(
+        default_factory=list
+    )

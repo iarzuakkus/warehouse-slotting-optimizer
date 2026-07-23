@@ -2,10 +2,31 @@
 
 from dataclasses import dataclass
 from decimal import Decimal
-from itertools import product
+from itertools import combinations, product
+from typing import Literal
 
 
 PERCENT_QUANTUM = Decimal("0.01")
+PhysicalPlacementErrorCode = Literal[
+    "duplicate_carton",
+    "out_of_bounds",
+    "carton_overlap",
+    "unsupported_carton",
+]
+
+
+class PhysicalPlacementValidationError(ValueError):
+    """Raised when a set of physical carton placements is not feasible."""
+
+    def __init__(
+        self,
+        code: PhysicalPlacementErrorCode,
+        message: str,
+        carton_ids: tuple[int, ...],
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.carton_ids = carton_ids
 
 
 @dataclass(frozen=True)
@@ -90,6 +111,183 @@ class PlacementResult:
         return PlacedCarton(carton_id=carton_id, **self.__dict__)
 
 
+def build_placed_carton(
+    *,
+    carton_id: int,
+    dimensions: CartonDimensions,
+    position_x_cm: Decimal,
+    position_y_cm: Decimal,
+    position_z_cm: Decimal,
+    rotation_degrees: int,
+) -> PlacedCarton:
+    """Build an AABB using the supported horizontal carton rotations."""
+    if rotation_degrees == 0:
+        occupied_width = dimensions.length_cm
+        occupied_depth = dimensions.width_cm
+    elif rotation_degrees == 90:
+        occupied_width = dimensions.width_cm
+        occupied_depth = dimensions.length_cm
+    else:
+        raise ValueError("rotation_degrees must be 0 or 90")
+    return PlacedCarton(
+        carton_id=carton_id,
+        position_x_cm=position_x_cm,
+        position_y_cm=position_y_cm,
+        position_z_cm=position_z_cm,
+        occupied_width_cm=occupied_width,
+        occupied_depth_cm=occupied_depth,
+        occupied_height_cm=dimensions.height_cm,
+        rotation_degrees=rotation_degrees,
+    )
+
+
+def placements_overlap(
+    first: PlacementResult | PlacedCarton,
+    second: PlacementResult | PlacedCarton,
+) -> bool:
+    """Return whether two axis-aligned occupied volumes intersect."""
+    separated = (
+        first.position_x_cm + first.occupied_width_cm
+        <= second.position_x_cm
+        or second.position_x_cm + second.occupied_width_cm
+        <= first.position_x_cm
+        or first.position_y_cm + first.occupied_depth_cm
+        <= second.position_y_cm
+        or second.position_y_cm + second.occupied_depth_cm
+        <= first.position_y_cm
+        or first.position_z_cm + first.occupied_height_cm
+        <= second.position_z_cm
+        or second.position_z_cm + second.occupied_height_cm
+        <= first.position_z_cm
+    )
+    return not separated
+
+
+def is_within_container(
+    container: ContainerDimensions,
+    placement: PlacementResult | PlacedCarton,
+) -> bool:
+    """Return whether an occupied volume stays inside its location."""
+    return (
+        placement.position_x_cm >= 0
+        and placement.position_y_cm >= 0
+        and placement.position_z_cm >= 0
+        and placement.position_x_cm + placement.occupied_width_cm
+        <= container.width_cm
+        and placement.position_y_cm + placement.occupied_depth_cm
+        <= container.depth_cm
+        and placement.position_z_cm + placement.occupied_height_cm
+        <= container.height_cm
+    )
+
+
+def is_fully_supported(
+    candidate: PlacementResult | PlacedCarton,
+    placed_cartons: list[PlacedCarton],
+) -> bool:
+    """Require the complete base footprint to rest on floor or carton tops."""
+    if candidate.position_z_cm == 0:
+        return True
+
+    candidate_left = candidate.position_x_cm
+    candidate_right = candidate_left + candidate.occupied_width_cm
+    candidate_front = candidate.position_y_cm
+    candidate_back = candidate_front + candidate.occupied_depth_cm
+    supporters = [
+        placed
+        for placed in placed_cartons
+        if placed.carton_id != getattr(candidate, "carton_id", None)
+        and placed.position_z_cm + placed.occupied_height_cm
+        == candidate.position_z_cm
+        and placed.position_x_cm < candidate_right
+        and placed.position_x_cm + placed.occupied_width_cm > candidate_left
+        and placed.position_y_cm < candidate_back
+        and placed.position_y_cm + placed.occupied_depth_cm > candidate_front
+    ]
+    if not supporters:
+        return False
+
+    x_edges = {candidate_left, candidate_right}
+    y_edges = {candidate_front, candidate_back}
+    for supporter in supporters:
+        x_edges.update(
+            {
+                max(candidate_left, supporter.position_x_cm),
+                min(
+                    candidate_right,
+                    supporter.position_x_cm + supporter.occupied_width_cm,
+                ),
+            }
+        )
+        y_edges.update(
+            {
+                max(candidate_front, supporter.position_y_cm),
+                min(
+                    candidate_back,
+                    supporter.position_y_cm + supporter.occupied_depth_cm,
+                ),
+            }
+        )
+
+    ordered_x = sorted(x_edges)
+    ordered_y = sorted(y_edges)
+    return all(
+        any(
+            supporter.position_x_cm <= left
+            and supporter.position_x_cm + supporter.occupied_width_cm >= right
+            and supporter.position_y_cm <= front
+            and supporter.position_y_cm + supporter.occupied_depth_cm >= back
+            for supporter in supporters
+        )
+        for left, right in zip(ordered_x, ordered_x[1:])
+        for front, back in zip(ordered_y, ordered_y[1:])
+        if right > left and back > front
+    )
+
+
+def validate_placements(
+    container: ContainerDimensions,
+    placed_cartons: list[PlacedCarton],
+) -> None:
+    """Validate uniqueness, bounds, collision, and full physical support."""
+    carton_ids = [carton.carton_id for carton in placed_cartons]
+    duplicate_ids = sorted(
+        carton_id
+        for carton_id in set(carton_ids)
+        if carton_ids.count(carton_id) > 1
+    )
+    if duplicate_ids:
+        raise PhysicalPlacementValidationError(
+            "duplicate_carton",
+            "A carton appears more than once in the physical scene",
+            tuple(duplicate_ids),
+        )
+
+    for carton in placed_cartons:
+        if not is_within_container(container, carton):
+            raise PhysicalPlacementValidationError(
+                "out_of_bounds",
+                f"Carton {carton.carton_id} exceeds location boundaries",
+                (carton.carton_id,),
+            )
+
+    for first, second in combinations(placed_cartons, 2):
+        if placements_overlap(first, second):
+            raise PhysicalPlacementValidationError(
+                "carton_overlap",
+                f"Cartons {first.carton_id} and {second.carton_id} overlap",
+                (first.carton_id, second.carton_id),
+            )
+
+    for carton in placed_cartons:
+        if not is_fully_supported(carton, placed_cartons):
+            raise PhysicalPlacementValidationError(
+                "unsupported_carton",
+                f"Carton {carton.carton_id} is not fully supported",
+                (carton.carton_id,),
+            )
+
+
 def has_weight_capacity(
     used_weight_kg: Decimal | None,
     incoming_weight_kg: Decimal | None,
@@ -147,11 +345,14 @@ def find_placement(
                 occupied_height_cm=carton.height_cm,
                 rotation_degrees=rotation,
             )
-            if not _is_within_bounds(container, result):
+            if not is_within_container(container, result):
                 continue
-            if any(_overlaps(result, placed) for placed in placed_cartons):
+            if any(
+                placements_overlap(result, placed)
+                for placed in placed_cartons
+            ):
                 continue
-            if not _is_supported(result, placed_cartons):
+            if not is_fully_supported(result, placed_cartons):
                 continue
             return result
     return None
@@ -164,58 +365,3 @@ def _orientations(
     if carton.length_cm == carton.width_cm:
         return (normal,)
     return (normal, (90, carton.width_cm, carton.length_cm))
-
-
-def _is_within_bounds(
-    container: ContainerDimensions,
-    placement: PlacementResult,
-) -> bool:
-    return (
-        placement.position_x_cm + placement.occupied_width_cm
-        <= container.width_cm
-        and placement.position_y_cm + placement.occupied_depth_cm
-        <= container.depth_cm
-        and placement.position_z_cm + placement.occupied_height_cm
-        <= container.height_cm
-    )
-
-
-def _overlaps(
-    candidate: PlacementResult,
-    placed: PlacedCarton,
-) -> bool:
-    separated = (
-        candidate.position_x_cm + candidate.occupied_width_cm
-        <= placed.position_x_cm
-        or placed.position_x_cm + placed.occupied_width_cm
-        <= candidate.position_x_cm
-        or candidate.position_y_cm + candidate.occupied_depth_cm
-        <= placed.position_y_cm
-        or placed.position_y_cm + placed.occupied_depth_cm
-        <= candidate.position_y_cm
-        or candidate.position_z_cm + candidate.occupied_height_cm
-        <= placed.position_z_cm
-        or placed.position_z_cm + placed.occupied_height_cm
-        <= candidate.position_z_cm
-    )
-    return not separated
-
-
-def _is_supported(
-    candidate: PlacementResult,
-    placed_cartons: list[PlacedCarton],
-) -> bool:
-    if candidate.position_z_cm == 0:
-        return True
-
-    candidate_right = candidate.position_x_cm + candidate.occupied_width_cm
-    candidate_back = candidate.position_y_cm + candidate.occupied_depth_cm
-    return any(
-        placed.position_z_cm + placed.occupied_height_cm
-        == candidate.position_z_cm
-        and placed.position_x_cm <= candidate.position_x_cm
-        and placed.position_x_cm + placed.occupied_width_cm >= candidate_right
-        and placed.position_y_cm <= candidate.position_y_cm
-        and placed.position_y_cm + placed.occupied_depth_cm >= candidate_back
-        for placed in placed_cartons
-    )

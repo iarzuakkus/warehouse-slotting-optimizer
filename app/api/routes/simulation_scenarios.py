@@ -5,6 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.simulation_scenario import (
+    SimulationMoveBatchListRead,
+    SimulationMoveBatchRead,
     SimulationMoveListRead,
     SimulationMoveRead,
     SimulationScenarioCreate,
@@ -13,6 +15,10 @@ from app.schemas.simulation_scenario import (
     SimulationScenarioUpdate,
 )
 from app.schemas.warehouse_rack import WarehouseRackSceneRead
+from app.services.simulation_move_batch import (
+    SimulationMoveBatchNotFoundError,
+    SimulationMoveBatchService,
+)
 from app.services.simulation_scenario import (
     SimulationScenarioConflictError,
     SimulationScenarioExecutionError,
@@ -31,6 +37,12 @@ def get_simulation_scenario_service(
     db: Session = Depends(get_db),
 ) -> SimulationScenarioService:
     return SimulationScenarioService(db)
+
+
+def get_simulation_move_batch_service(
+    db: Session = Depends(get_db),
+) -> SimulationMoveBatchService:
+    return SimulationMoveBatchService(db)
 
 
 @router.get("", response_model=list[SimulationScenarioRead])
@@ -158,6 +170,31 @@ def get_simulation_scenario_scene(
 
 
 @router.get(
+    "/{scenario_id}/batch-scene",
+    response_model=list[WarehouseRackSceneRead],
+)
+def get_simulation_scenario_batch_scene(
+    scenario_id: int = Path(gt=0),
+    batch_step: int = Query(alias="step", ge=0),
+    service: SimulationMoveBatchService = Depends(
+        get_simulation_move_batch_service
+    ),
+) -> list[WarehouseRackSceneRead]:
+    try:
+        return service.get_batch_scene(scenario_id, batch_step)
+    except SimulationScenarioNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except SimulationScenarioConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
     "/{scenario_id}/moves",
     response_model=SimulationMoveListRead,
 )
@@ -195,6 +232,58 @@ def get_simulation_scenario_move(
     try:
         return service.get_move(scenario_id, sequence)
     except SimulationScenarioNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except SimulationScenarioConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/{scenario_id}/move-batches",
+    response_model=SimulationMoveBatchListRead,
+)
+def list_simulation_move_batches(
+    scenario_id: int = Path(gt=0),
+    service: SimulationMoveBatchService = Depends(
+        get_simulation_move_batch_service
+    ),
+) -> SimulationMoveBatchListRead:
+    try:
+        return service.get_move_batches(scenario_id)
+    except SimulationScenarioNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except SimulationScenarioConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/{scenario_id}/move-batches/{sequence}",
+    response_model=SimulationMoveBatchRead,
+)
+def get_simulation_move_batch(
+    scenario_id: int = Path(gt=0),
+    sequence: int = Path(gt=0),
+    service: SimulationMoveBatchService = Depends(
+        get_simulation_move_batch_service
+    ),
+) -> SimulationMoveBatchRead:
+    try:
+        return service.get_move_batch(scenario_id, sequence)
+    except (
+        SimulationScenarioNotFoundError,
+        SimulationMoveBatchNotFoundError,
+    ) as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),

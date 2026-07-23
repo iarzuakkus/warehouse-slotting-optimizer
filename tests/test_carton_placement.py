@@ -7,9 +7,12 @@ import pytest
 from app.algorithms.carton_placement import (
     CartonDimensions,
     ContainerDimensions,
+    PhysicalPlacementValidationError,
     PlacedCarton,
+    build_placed_carton,
     find_placement,
     has_weight_capacity,
+    validate_placements,
     volume_utilization_percent,
 )
 
@@ -180,3 +183,168 @@ def test_same_input_produces_same_placement() -> None:
     second_result = find_placement(container, dimensions, occupied)
 
     assert first_result == second_result
+
+
+def test_builds_rotation_aware_aabb() -> None:
+    placed = build_placed_carton(
+        carton_id=1,
+        dimensions=CartonDimensions(
+            decimal("40"),
+            decimal("30"),
+            decimal("20"),
+        ),
+        position_x_cm=decimal("5"),
+        position_y_cm=decimal("6"),
+        position_z_cm=decimal("0"),
+        rotation_degrees=90,
+    )
+
+    assert placed.occupied_width_cm == decimal("30")
+    assert placed.occupied_depth_cm == decimal("40")
+    assert placed.occupied_height_cm == decimal("20")
+
+
+def test_validation_rejects_partial_aabb_overlap() -> None:
+    first = PlacedCarton(
+        carton_id=1,
+        position_x_cm=decimal("0"),
+        position_y_cm=decimal("0"),
+        position_z_cm=decimal("0"),
+        occupied_width_cm=decimal("30"),
+        occupied_depth_cm=decimal("30"),
+        occupied_height_cm=decimal("20"),
+        rotation_degrees=0,
+    )
+    second = PlacedCarton(
+        carton_id=2,
+        position_x_cm=decimal("20"),
+        position_y_cm=decimal("20"),
+        position_z_cm=decimal("0"),
+        occupied_width_cm=decimal("30"),
+        occupied_depth_cm=decimal("30"),
+        occupied_height_cm=decimal("20"),
+        rotation_degrees=0,
+    )
+
+    with pytest.raises(PhysicalPlacementValidationError) as exc_info:
+        validate_placements(
+            ContainerDimensions(decimal("100"), decimal("80"), decimal("60")),
+            [first, second],
+        )
+
+    assert exc_info.value.code == "carton_overlap"
+    assert exc_info.value.carton_ids == (1, 2)
+
+
+def test_validation_rejects_out_of_bounds_carton() -> None:
+    carton = PlacedCarton(
+        carton_id=1,
+        position_x_cm=decimal("80"),
+        position_y_cm=decimal("0"),
+        position_z_cm=decimal("0"),
+        occupied_width_cm=decimal("30"),
+        occupied_depth_cm=decimal("30"),
+        occupied_height_cm=decimal("20"),
+        rotation_degrees=0,
+    )
+
+    with pytest.raises(PhysicalPlacementValidationError) as exc_info:
+        validate_placements(
+            ContainerDimensions(decimal("100"), decimal("80"), decimal("60")),
+            [carton],
+        )
+
+    assert exc_info.value.code == "out_of_bounds"
+    assert exc_info.value.carton_ids == (1,)
+
+
+def test_validation_rejects_unsupported_carton() -> None:
+    carton = PlacedCarton(
+        carton_id=1,
+        position_x_cm=decimal("0"),
+        position_y_cm=decimal("0"),
+        position_z_cm=decimal("20"),
+        occupied_width_cm=decimal("30"),
+        occupied_depth_cm=decimal("30"),
+        occupied_height_cm=decimal("20"),
+        rotation_degrees=0,
+    )
+
+    with pytest.raises(PhysicalPlacementValidationError) as exc_info:
+        validate_placements(
+            ContainerDimensions(decimal("100"), decimal("80"), decimal("60")),
+            [carton],
+        )
+
+    assert exc_info.value.code == "unsupported_carton"
+    assert exc_info.value.carton_ids == (1,)
+
+
+def test_validation_accepts_base_fully_supported_by_multiple_cartons() -> None:
+    left_support = PlacedCarton(
+        carton_id=1,
+        position_x_cm=decimal("0"),
+        position_y_cm=decimal("0"),
+        position_z_cm=decimal("0"),
+        occupied_width_cm=decimal("20"),
+        occupied_depth_cm=decimal("40"),
+        occupied_height_cm=decimal("10"),
+        rotation_degrees=0,
+    )
+    right_support = PlacedCarton(
+        carton_id=2,
+        position_x_cm=decimal("20"),
+        position_y_cm=decimal("0"),
+        position_z_cm=decimal("0"),
+        occupied_width_cm=decimal("20"),
+        occupied_depth_cm=decimal("40"),
+        occupied_height_cm=decimal("10"),
+        rotation_degrees=0,
+    )
+    stacked = PlacedCarton(
+        carton_id=3,
+        position_x_cm=decimal("0"),
+        position_y_cm=decimal("0"),
+        position_z_cm=decimal("10"),
+        occupied_width_cm=decimal("40"),
+        occupied_depth_cm=decimal("40"),
+        occupied_height_cm=decimal("20"),
+        rotation_degrees=0,
+    )
+
+    validate_placements(
+        ContainerDimensions(decimal("40"), decimal("40"), decimal("40")),
+        [left_support, right_support, stacked],
+    )
+
+
+def test_validation_rejects_duplicate_carton_id() -> None:
+    first = PlacedCarton(
+        carton_id=1,
+        position_x_cm=decimal("0"),
+        position_y_cm=decimal("0"),
+        position_z_cm=decimal("0"),
+        occupied_width_cm=decimal("20"),
+        occupied_depth_cm=decimal("20"),
+        occupied_height_cm=decimal("20"),
+        rotation_degrees=0,
+    )
+    duplicate = PlacedCarton(
+        carton_id=1,
+        position_x_cm=decimal("20"),
+        position_y_cm=decimal("0"),
+        position_z_cm=decimal("0"),
+        occupied_width_cm=decimal("20"),
+        occupied_depth_cm=decimal("20"),
+        occupied_height_cm=decimal("20"),
+        rotation_degrees=0,
+    )
+
+    with pytest.raises(PhysicalPlacementValidationError) as exc_info:
+        validate_placements(
+            ContainerDimensions(decimal("100"), decimal("80"), decimal("60")),
+            [first, duplicate],
+        )
+
+    assert exc_info.value.code == "duplicate_carton"
+    assert exc_info.value.carton_ids == (1,)

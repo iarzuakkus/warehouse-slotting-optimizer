@@ -2,11 +2,12 @@
 
 from dataclasses import dataclass
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.catalog import CartonType, Product, ProductPackaging
 from app.models.inventory import Carton, WarehouseLocation, WarehouseRack
+from app.models.optimization import OptimizationAssignment, OptimizationRun
 from app.models.orders import Order, OrderLine
 
 
@@ -16,6 +17,7 @@ class SyntheticCleanupSafetyError(Exception):
 
 @dataclass(frozen=True)
 class SyntheticCleanupResult:
+    optimization_run_count: int
     order_count: int
     carton_count: int
     location_count: int
@@ -79,6 +81,28 @@ def delete_synthetic_data(session: Session) -> SyntheticCleanupResult:
             "Synthetic warehouse data is referenced by non-synthetic records"
         )
 
+    synthetic_location_ids = select(WarehouseLocation.id).where(
+        WarehouseLocation.aisle.like("SYN-A%")
+    )
+    synthetic_carton_ids = select(Carton.id).where(
+        Carton.carton_number.like("SYN-CARTON-%")
+    )
+    affected_optimization_run_ids = select(
+        OptimizationAssignment.optimization_run_id
+    ).where(
+        or_(
+            OptimizationAssignment.carton_id.in_(synthetic_carton_ids),
+            OptimizationAssignment.from_location_id.in_(synthetic_location_ids),
+            OptimizationAssignment.to_location_id.in_(synthetic_location_ids),
+        )
+    )
+    optimization_run_count = _rowcount(
+        session.execute(
+            delete(OptimizationRun)
+            .where(OptimizationRun.id.in_(affected_optimization_run_ids))
+            .execution_options(synchronize_session=False)
+        )
+    )
     order_count = _rowcount(
         session.execute(delete(Order).where(Order.order_number.like("SYN-ORD-%")))
     )
@@ -106,6 +130,7 @@ def delete_synthetic_data(session: Session) -> SyntheticCleanupResult:
         )
     )
     return SyntheticCleanupResult(
+        optimization_run_count=optimization_run_count,
         order_count=order_count,
         carton_count=carton_count,
         location_count=location_count,

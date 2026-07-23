@@ -12,7 +12,10 @@ from sqlalchemy.orm import Session
 from app.algorithms.carton_placement import (
     CartonDimensions,
     ContainerDimensions,
+    PhysicalPlacementValidationError,
     PlacedCarton,
+    build_placed_carton,
+    validate_placements,
 )
 from app.algorithms.slotting_optimizer import (
     SlottingCarton,
@@ -57,6 +60,23 @@ class SimulationScenarioNotFoundError(Exception):
 
 class SimulationScenarioConflictError(Exception):
     """Raised when scenario state prevents the requested operation."""
+
+
+class SimulationSceneValidationError(SimulationScenarioConflictError):
+    """Raised when an intermediate simulation scene is physically invalid."""
+
+    def __init__(
+        self,
+        *,
+        code: str,
+        message: str,
+        carton_ids: tuple[int, ...] = (),
+        location_id: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.carton_ids = carton_ids
+        self.location_id = location_id
 
 
 class SimulationScenarioExecutionError(Exception):
@@ -274,6 +294,116 @@ class SimulationScenarioService:
             assignments[:effective_step],
         )
         self._refresh_scene_utilization(racks, metadata)
+        return [WarehouseRackSceneRead.model_validate(rack) for rack in racks]
+
+    def get_scene_for_move_sequence_batches(
+        self,
+        scenario_id: int,
+        move_sequence_batches: list[list[int]],
+        staged_sequence_batches: list[list[int]] | None = None,
+        finalized_sequence_batches: list[list[int]] | None = None,
+    ) -> list[WarehouseRackSceneRead]:
+        """Build a scene by atomically applying explicit move-sequence batches."""
+        scenario = self._get_completed_scenario(scenario_id)
+        if scenario.source_snapshot is None:
+            raise SimulationScenarioConflictError(
+                "Simulation scenario does not contain a source snapshot"
+            )
+
+        staged_sequence_batches = staged_sequence_batches or [
+            [] for _ in move_sequence_batches
+        ]
+        finalized_sequence_batches = finalized_sequence_batches or [
+            [] for _ in move_sequence_batches
+        ]
+        if not (
+            len(move_sequence_batches)
+            == len(staged_sequence_batches)
+            == len(finalized_sequence_batches)
+        ):
+            raise SimulationScenarioConflictError(
+                "Batch move, staging, and finalize groups must have equal length"
+            )
+        requested_sequences = [
+            sequence
+            for batch_sequences in move_sequence_batches
+            for sequence in batch_sequences
+        ]
+        if len(requested_sequences) != len(set(requested_sequences)):
+            raise SimulationScenarioConflictError(
+                "A move sequence cannot be applied in multiple batches"
+            )
+        assignments_by_sequence = {
+            assignment.sequence_number: assignment
+            for assignment in scenario.assignments
+            if assignment.sequence_number is not None
+        }
+        missing_sequences = sorted(
+            set(requested_sequences) - set(assignments_by_sequence)
+        )
+        if missing_sequences:
+            raise SimulationScenarioConflictError(
+                "Move sequences do not exist in simulation scenario: "
+                + ", ".join(str(sequence) for sequence in missing_sequences)
+            )
+
+        snapshot = deepcopy(scenario.source_snapshot)
+        racks = snapshot.get("racks", [])
+        metadata = snapshot.get("carton_metadata", {})
+        self._validate_scene_physics(racks)
+        locations, carton_registry = self._scene_indexes(racks)
+        active_staged_sequences: set[int] = set()
+        for (
+            batch_sequences,
+            staged_sequences,
+            finalized_sequences,
+        ) in zip(
+            move_sequence_batches,
+            staged_sequence_batches,
+            finalized_sequence_batches,
+        ):
+            staged_set = set(staged_sequences)
+            finalized_set = set(finalized_sequences)
+            if not staged_set.issubset(batch_sequences):
+                raise SimulationScenarioConflictError(
+                    "Staged sequences must belong to the current batch"
+                )
+            if staged_set.intersection(active_staged_sequences):
+                raise SimulationScenarioConflictError(
+                    "A move sequence is already held in staging"
+                )
+            if not finalized_set.issubset(active_staged_sequences):
+                raise SimulationScenarioConflictError(
+                    "Only previously staged move sequences can be finalized"
+                )
+            assignments = [
+                assignments_by_sequence[sequence]
+                for sequence in batch_sequences
+            ]
+            finalized_assignments = [
+                assignments_by_sequence[sequence]
+                for sequence in finalized_sequences
+            ]
+            if any(
+                assignment.result_status != "placed"
+                for assignment in assignments + finalized_assignments
+            ):
+                raise SimulationScenarioConflictError(
+                    "Only placed movements can be applied to a batch scene"
+                )
+            self._apply_assignment_batch_to_scene(
+                locations=locations,
+                carton_registry=carton_registry,
+                assignments=assignments,
+                staged_sequences=staged_set,
+                finalized_assignments=finalized_assignments,
+            )
+            active_staged_sequences.update(staged_set)
+            active_staged_sequences.difference_update(finalized_set)
+            self._validate_scene_physics(racks)
+            self._refresh_scene_utilization(racks, metadata)
+        if not move_sequence_batches:
+            self._refresh_scene_utilization(racks, metadata)
         return [WarehouseRackSceneRead.model_validate(rack) for rack in racks]
 
     def _get_scenario(
@@ -903,6 +1033,164 @@ class SimulationScenarioService:
                 }
             )
             locations[assignment.to_location_id]["cartons"].append(carton)
+
+    @staticmethod
+    def _apply_assignment_batch_to_scene(
+        *,
+        locations: dict[int, dict[str, Any]],
+        carton_registry: dict[int, dict[str, Any]],
+        assignments: list[OptimizationAssignment],
+        staged_sequences: set[int],
+        finalized_assignments: list[OptimizationAssignment],
+    ) -> None:
+        """Remove every batch carton before placing any batch destination."""
+        carton_ids = {assignment.carton_id for assignment in assignments}
+        if len(carton_ids) != len(assignments):
+            raise SimulationScenarioConflictError(
+                "A carton cannot be moved more than once in the same batch"
+            )
+        for location in locations.values():
+            location["cartons"] = [
+                carton
+                for carton in location["cartons"]
+                if int(carton["id"]) not in carton_ids
+            ]
+
+        for assignment in assignments:
+            if assignment.sequence_number in staged_sequences:
+                continue
+            SimulationScenarioService._place_assignment_carton(
+                assignment,
+                locations,
+                carton_registry,
+            )
+        for assignment in finalized_assignments:
+            SimulationScenarioService._place_assignment_carton(
+                assignment,
+                locations,
+                carton_registry,
+            )
+
+    @staticmethod
+    def _place_assignment_carton(
+        assignment: OptimizationAssignment,
+        locations: dict[int, dict[str, Any]],
+        carton_registry: dict[int, dict[str, Any]],
+    ) -> None:
+        carton = carton_registry.get(assignment.carton_id)
+        target = (
+            locations.get(assignment.to_location_id)
+            if assignment.to_location_id is not None
+            else None
+        )
+        if carton is None or target is None:
+            raise SimulationScenarioConflictError(
+                f"Move {assignment.sequence_number} cannot be applied "
+                "to the source snapshot"
+            )
+        carton.update(
+            {
+                "position_x_cm": str(assignment.proposed_position_x_cm),
+                "position_y_cm": str(assignment.proposed_position_y_cm),
+                "position_z_cm": str(assignment.proposed_position_z_cm),
+                "rotation_degrees": assignment.proposed_rotation_degrees,
+            }
+        )
+        target["cartons"].append(carton)
+
+    @staticmethod
+    def _scene_indexes(
+        racks: list[dict[str, Any]],
+    ) -> tuple[dict[int, dict[str, Any]], dict[int, dict[str, Any]]]:
+        locations: dict[int, dict[str, Any]] = {}
+        cartons: dict[int, dict[str, Any]] = {}
+        for rack in racks:
+            for location in rack["locations"]:
+                locations[int(location["id"])] = location
+                for carton in location["cartons"]:
+                    cartons[int(carton["id"])] = carton
+        return locations, cartons
+
+    @staticmethod
+    def _validate_scene_physics(
+        racks: list[dict[str, Any]],
+    ) -> None:
+        scene_carton_ids = [
+            int(carton["id"])
+            for rack in racks
+            for location in rack["locations"]
+            for carton in location["cartons"]
+        ]
+        duplicate_ids = sorted(
+            carton_id
+            for carton_id in set(scene_carton_ids)
+            if scene_carton_ids.count(carton_id) > 1
+        )
+        if duplicate_ids:
+            raise SimulationSceneValidationError(
+                code="duplicate_carton",
+                message="A carton appears more than once in the batch scene",
+                carton_ids=tuple(duplicate_ids),
+            )
+
+        for rack in racks:
+            for location in rack["locations"]:
+                location_id = int(location["id"])
+                container = ContainerDimensions(
+                    width_cm=Decimal(str(location["usable_width_cm"])),
+                    depth_cm=Decimal(str(location["usable_depth_cm"])),
+                    height_cm=Decimal(str(location["usable_height_cm"])),
+                )
+                try:
+                    placed_cartons = [
+                        build_placed_carton(
+                            carton_id=int(carton["id"]),
+                            dimensions=CartonDimensions(
+                                length_cm=Decimal(
+                                    str(carton["outer_length_cm"])
+                                ),
+                                width_cm=Decimal(
+                                    str(carton["outer_width_cm"])
+                                ),
+                                height_cm=Decimal(
+                                    str(carton["outer_height_cm"])
+                                ),
+                            ),
+                            position_x_cm=Decimal(
+                                str(carton["position_x_cm"])
+                            ),
+                            position_y_cm=Decimal(
+                                str(carton["position_y_cm"])
+                            ),
+                            position_z_cm=Decimal(
+                                str(carton["position_z_cm"])
+                            ),
+                            rotation_degrees=int(
+                                carton["rotation_degrees"]
+                            ),
+                        )
+                        for carton in location["cartons"]
+                    ]
+                    validate_placements(container, placed_cartons)
+                except PhysicalPlacementValidationError as exc:
+                    raise SimulationSceneValidationError(
+                        code=exc.code,
+                        message=(
+                            f"Location {location_id} has an invalid physical "
+                            f"scene: {exc}"
+                        ),
+                        carton_ids=exc.carton_ids,
+                        location_id=location_id,
+                    ) from exc
+                except (TypeError, ValueError) as exc:
+                    raise SimulationSceneValidationError(
+                        code="invalid_placement",
+                        message=(
+                            f"Location {location_id} contains malformed "
+                            "physical placement data"
+                        ),
+                        location_id=location_id,
+                    ) from exc
 
     def _refresh_scene_utilization(
         self,
