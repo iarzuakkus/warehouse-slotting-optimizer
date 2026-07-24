@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.simulation_scenario import (
+    SimulationBatchAnimationRead,
     SimulationMoveBatchListRead,
     SimulationMoveBatchRead,
     SimulationMoveListRead,
@@ -256,6 +257,34 @@ def list_simulation_move_batches(
     try:
         return service.get_move_batches(scenario_id)
     except SimulationScenarioNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except SimulationScenarioConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/{scenario_id}/move-batches/{sequence}/animation",
+    response_model=SimulationBatchAnimationRead,
+)
+def get_simulation_move_batch_animation(
+    scenario_id: int = Path(gt=0),
+    sequence: int = Path(gt=0),
+    service: SimulationMoveBatchService = Depends(
+        get_simulation_move_batch_service
+    ),
+) -> SimulationBatchAnimationRead:
+    try:
+        return service.get_batch_animation(scenario_id, sequence)
+    except (
+        SimulationScenarioNotFoundError,
+        SimulationMoveBatchNotFoundError,
+    ) as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),

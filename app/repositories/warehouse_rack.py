@@ -143,6 +143,20 @@ class WarehouseRackRepository:
         )
         return list(self.session.scalars(statement))
 
+    def list_active_racks_for_navigation(self) -> list[WarehouseRack]:
+        """Load physical obstacles and active location-to-rack mappings."""
+        active_locations = WarehouseRack.locations.and_(
+            WarehouseLocation.is_active.is_(True)
+        )
+        statement = (
+            select(WarehouseRack)
+            .where(WarehouseRack.is_active.is_(True))
+            .options(selectinload(active_locations))
+            .execution_options(populate_existing=True)
+            .order_by(WarehouseRack.aisle, WarehouseRack.bay)
+        )
+        return list(self.session.scalars(statement))
+
     def list_racks_for_simulation(
         self,
         aisle_filter: list[str] | None = None,

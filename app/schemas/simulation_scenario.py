@@ -17,6 +17,13 @@ SimulationScenarioStatus = Literal[
 SimulationAssignmentStatus = Literal["placed", "unplaced"]
 SimulationEquipmentType = Literal["cart", "pallet_jack", "forklift"]
 SimulationMoveBatchStopType = Literal["pickup", "dropoff"]
+SimulationBatchAnimationEventType = Literal[
+    "travel",
+    "pickup",
+    "dropoff",
+    "staging_pickup",
+    "staging_dropoff",
+]
 
 
 class SimulationObjectiveWeights(BaseModel):
@@ -273,3 +280,52 @@ class SimulationMoveBatchListRead(BaseModel):
     validation_errors: list[SimulationMoveBatchValidationRead] = Field(
         default_factory=list
     )
+
+
+class SimulationBatchAnimationWaypointRead(BaseModel):
+    """A timestamped warehouse-graph point followed by the equipment."""
+
+    sequence: int = Field(gt=0)
+    node_id: str = Field(min_length=1)
+    x_m: Decimal
+    y_m: Decimal
+    z_m: Decimal = Field(default=Decimal("0"), ge=0)
+    cumulative_distance_m: Decimal = Field(ge=0)
+    elapsed_seconds: Decimal = Field(ge=0)
+
+
+class SimulationBatchAnimationEventRead(BaseModel):
+    """One deterministic travel or carton-handling animation event."""
+
+    sequence: int = Field(gt=0)
+    type: SimulationBatchAnimationEventType
+    start_seconds: Decimal = Field(ge=0)
+    end_seconds: Decimal = Field(ge=0)
+    location_id: int | None = Field(default=None, gt=0)
+    carton_ids: list[int] = Field(default_factory=list)
+    waypoints: list[SimulationBatchAnimationWaypointRead] = Field(
+        default_factory=list
+    )
+
+    @model_validator(mode="after")
+    def validate_event_time_range(
+        self,
+    ) -> "SimulationBatchAnimationEventRead":
+        if self.end_seconds < self.start_seconds:
+            raise ValueError(
+                "animation event end_seconds cannot precede start_seconds"
+            )
+        return self
+
+
+class SimulationBatchAnimationRead(BaseModel):
+    """Frontend-ready timeline for one material-handling batch."""
+
+    scenario_id: int = Field(gt=0)
+    batch_sequence: int = Field(gt=0)
+    equipment_type: SimulationEquipmentType
+    source_scene_step: int = Field(ge=0)
+    target_scene_step: int = Field(gt=0)
+    route_distance_m: Decimal = Field(ge=0)
+    estimated_duration_seconds: Decimal = Field(ge=0)
+    events: list[SimulationBatchAnimationEventRead] = Field(min_length=1)

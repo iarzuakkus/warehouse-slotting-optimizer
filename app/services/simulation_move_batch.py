@@ -9,6 +9,12 @@ from app.algorithms.carton_placement import (
     PlacedCarton,
     build_placed_carton,
 )
+from app.algorithms.forklift_animation import (
+    AnimationRouteLeg,
+    AnimationRoutePoint,
+    AnimationStop,
+    build_batch_animation,
+)
 from app.algorithms.move_batching import (
     MoveBatchCandidate,
     MoveBatchLimits,
@@ -16,10 +22,17 @@ from app.algorithms.move_batching import (
     PlannedMoveBatch,
     plan_move_batches,
 )
+from app.algorithms.warehouse_navigation import (
+    NavigationRoute,
+    WarehouseNavigationError,
+)
 from app.models.inventory import WarehouseLocation
 from app.models.optimization import OptimizationAssignment, OptimizationRun
 from app.repositories.optimization_run import OptimizationRunRepository
 from app.schemas.simulation_scenario import (
+    SimulationBatchAnimationEventRead,
+    SimulationBatchAnimationRead,
+    SimulationBatchAnimationWaypointRead,
     SimulationMoveBatchItemRead,
     SimulationMoveBatchListRead,
     SimulationMoveBatchRead,
@@ -38,6 +51,12 @@ from app.services.warehouse_graph import (
     WarehouseGraphLocationNotFoundError,
     WarehouseGraphService,
     WarehouseGraphSnapshot,
+)
+from app.services.warehouse_navigation import (
+    PhysicalWarehouseNavigationSnapshot,
+    WarehouseNavigationDataError,
+    WarehouseNavigationLocationNotFoundError,
+    WarehouseNavigationService,
 )
 
 
@@ -58,6 +77,7 @@ class SimulationMoveBatchService:
     def __init__(self, session: Session) -> None:
         self.repository = OptimizationRunRepository(session)
         self.graph_service = WarehouseGraphService(session)
+        self.navigation_service = WarehouseNavigationService(session)
         self.scenario_service = SimulationScenarioService(session)
 
     def get_move_batches(
@@ -181,6 +201,148 @@ class SimulationMoveBatchService:
             move_sequence_batches,
             staged_sequence_batches,
             finalized_sequence_batches,
+        )
+
+    def get_batch_animation(
+        self,
+        scenario_id: int,
+        sequence: int,
+    ) -> SimulationBatchAnimationRead:
+        scenario = self._get_completed_scenario(scenario_id)
+        parameters, _, plan = self._build_plan(scenario)
+        batch = next(
+            (
+                planned_batch
+                for planned_batch in plan.batches
+                if planned_batch.sequence == sequence
+            ),
+            None,
+        )
+        if batch is None:
+            raise SimulationMoveBatchNotFoundError(
+                f"Move batch {sequence} not found in simulation scenario "
+                f"{scenario_id}"
+            )
+
+        try:
+            navigation = self.navigation_service.load_snapshot(
+                parameters.equipment_type
+            )
+            animation_stops: list[AnimationStop] = []
+            previous_location_id: int | None = None
+            staged_carton_ids = {
+                item.carton_id for item in batch.staged_items
+            }
+            finalized_carton_ids = {
+                item.carton_id for item in batch.finalized_items
+            }
+            for stop in batch.stops:
+                if previous_location_id is None:
+                    navigation_route = (
+                        navigation.path_from_staging(stop.location_id)
+                        if batch.finalized_items
+                        else navigation.path_from_dispatch(stop.location_id)
+                    )
+                else:
+                    navigation_route = (
+                        navigation.path_between_locations(
+                            previous_location_id,
+                            stop.location_id,
+                        )
+                    )
+                route = self._animation_route_from_navigation(
+                    navigation,
+                    navigation_route,
+                )
+                carton_ids = tuple(stop.carton_ids)
+                if (
+                    stop.type == "pickup"
+                    and set(carton_ids).issubset(staged_carton_ids)
+                ):
+                    event_type = "staging_pickup"
+                elif (
+                    stop.type == "dropoff"
+                    and set(carton_ids).issubset(finalized_carton_ids)
+                ):
+                    event_type = "staging_dropoff"
+                else:
+                    event_type = stop.type
+                animation_stops.append(
+                    AnimationStop(
+                        type=event_type,
+                        location_id=stop.location_id,
+                        carton_ids=carton_ids,
+                        route_from_previous=route,
+                    )
+                )
+                previous_location_id = stop.location_id
+
+            if previous_location_id is None:
+                raise SimulationScenarioConflictError(
+                    f"Move batch {sequence} has no animation stops"
+                )
+            navigation_return_route = (
+                navigation.path_to_staging(previous_location_id)
+                if batch.staged_items
+                else navigation.path_to_dispatch(previous_location_id)
+            )
+            return_route = self._animation_route_from_navigation(
+                navigation,
+                navigation_return_route,
+            )
+        except (
+            WarehouseNavigationDataError,
+            WarehouseNavigationLocationNotFoundError,
+            WarehouseNavigationError,
+        ) as exc:
+            raise SimulationScenarioConflictError(
+                f"Safe animation route could not be generated: {exc}"
+            ) from exc
+
+        timeline = build_batch_animation(
+            equipment_type=parameters.equipment_type,
+            stops=animation_stops,
+            return_to_dispatch=return_route,
+            handling_seconds_per_carton=self.handling_seconds_per_carton,
+            initial_loaded_carton_ids=tuple(
+                item.carton_id for item in batch.finalized_items
+            ),
+        )
+        return SimulationBatchAnimationRead(
+            scenario_id=scenario.id,
+            batch_sequence=batch.sequence,
+            equipment_type=parameters.equipment_type,
+            source_scene_step=batch.sequence - 1,
+            target_scene_step=batch.sequence,
+            route_distance_m=timeline.route_distance_m,
+            estimated_duration_seconds=(
+                timeline.estimated_duration_seconds
+            ),
+            events=[
+                SimulationBatchAnimationEventRead(
+                    sequence=event.sequence,
+                    type=event.type,
+                    start_seconds=event.start_seconds,
+                    end_seconds=event.end_seconds,
+                    location_id=event.location_id,
+                    carton_ids=list(event.carton_ids),
+                    waypoints=[
+                        SimulationBatchAnimationWaypointRead(
+                            sequence=waypoint.sequence,
+                            node_id=waypoint.node_id,
+                            x_m=waypoint.x_m,
+                            y_m=waypoint.y_m,
+                            z_m=waypoint.z_m,
+                            cumulative_distance_m=(
+                                waypoint.cumulative_distance_m
+                            ),
+                            elapsed_seconds=waypoint.elapsed_seconds,
+                        )
+                        for waypoint in event.waypoints
+                    ],
+                )
+                for event in timeline.events
+            ],
         )
 
     def _build_plan(
@@ -511,6 +673,32 @@ class SimulationMoveBatchService:
             locations,
         )
         return distance.quantize(self.distance_quantum)
+
+    @staticmethod
+    def _animation_route_from_navigation(
+        snapshot: PhysicalWarehouseNavigationSnapshot,
+        route: NavigationRoute,
+    ) -> AnimationRouteLeg:
+        points: list[AnimationRoutePoint] = []
+        for index, node in enumerate(route.nodes):
+            distance = (
+                Decimal("0")
+                if index == 0
+                else snapshot.navigation.edge_distance(
+                    route.nodes[index - 1].id,
+                    node.id,
+                )
+            )
+            points.append(
+                AnimationRoutePoint(
+                    node_id=node.id,
+                    x_m=node.x_m,
+                    y_m=node.y_m,
+                    z_m=Decimal("0"),
+                    distance_from_previous_m=distance,
+                )
+            )
+        return AnimationRouteLeg(points=tuple(points))
 
     @staticmethod
     def _distance_from_dispatch(

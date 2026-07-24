@@ -444,6 +444,77 @@ def test_batch_scene_applies_swap_cycle_atomically(
         len(batch["items"]) for batch in payload["batches"]
     ) + len(payload["unbatched_items"])
     assert payload["carton_move_count"] == serialized_item_count
+    staging_animation = db_client.get(
+        f"/simulation-scenarios/{scenario_id}"
+        "/move-batches/1/animation"
+    )
+    transport_animation = db_client.get(
+        f"/simulation-scenarios/{scenario_id}"
+        "/move-batches/2/animation"
+    )
+    finalization_animation = db_client.get(
+        f"/simulation-scenarios/{scenario_id}"
+        "/move-batches/3/animation"
+    )
+    assert staging_animation.status_code == 200, staging_animation.text
+    assert transport_animation.status_code == 200, transport_animation.text
+    assert (
+        finalization_animation.status_code == 200
+    ), finalization_animation.text
+    staging_payload = staging_animation.json()
+    transport_payload = transport_animation.json()
+    finalization_payload = finalization_animation.json()
+    assert staging_payload["source_scene_step"] == 0
+    assert staging_payload["target_scene_step"] == 1
+    assert "staging_pickup" in [
+        event["type"] for event in staging_payload["events"]
+    ]
+    assert [event["type"] for event in transport_payload["events"]] == [
+        "travel",
+        "pickup",
+        "dropoff",
+        "travel",
+    ]
+    assert finalization_payload["source_scene_step"] == 2
+    assert finalization_payload["target_scene_step"] == 3
+    assert "staging_dropoff" in [
+        event["type"] for event in finalization_payload["events"]
+    ]
+    finalization_travel = next(
+        event
+        for event in finalization_payload["events"]
+        if event["type"] == "travel"
+    )
+    assert finalization_travel["carton_ids"] == [staged_carton_id]
+    staging_travel_events = [
+        event
+        for event in staging_payload["events"]
+        if event["type"] == "travel"
+    ]
+    assert (
+        staging_travel_events[-1]["waypoints"][-1]["node_id"]
+        == "staging"
+    )
+    finalization_travel_events = [
+        event
+        for event in finalization_payload["events"]
+        if event["type"] == "travel"
+    ]
+    assert (
+        finalization_travel_events[0]["waypoints"][0]["node_id"]
+        == "staging"
+    )
+    assert all(
+        Decimal(waypoint["z_m"]) == 0
+        for animation_payload in (
+            staging_payload,
+            transport_payload,
+            finalization_payload,
+        )
+        for event in animation_payload["events"]
+        if event["type"] == "travel"
+        for waypoint in event["waypoints"]
+    )
     assert staging_scene.status_code == 200, staging_scene.text
     assert (
         _carton_location(staging_scene.json(), staged_carton_id)
@@ -749,3 +820,146 @@ def test_invalid_scenario_sequence_and_pending_scenario_responses(
     assert missing_scenario.status_code == 404
     assert pending.status_code == 409
     assert invalid_sequence.status_code == 422
+
+
+def test_batch_animation_returns_forklift_timeline(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    aisle, source_id, target_id, carton_id = create_movement_context(
+        db_client,
+        db_session,
+        "BATCH-ANIMATION",
+    )
+    scenario = db_client.post(
+        "/simulation-scenarios",
+        json={
+            "name": "Forklift Animation Scenario",
+            "seed": 101,
+            "aisle_filter": [aisle],
+            "equipment_type": "forklift",
+        },
+    )
+    assert scenario.status_code == 201, scenario.text
+    scenario_id = scenario.json()["id"]
+    run = db_client.post(f"/simulation-scenarios/{scenario_id}/run")
+    batches = db_client.get(
+        f"/simulation-scenarios/{scenario_id}/move-batches"
+    )
+    animation = db_client.get(
+        f"/simulation-scenarios/{scenario_id}"
+        "/move-batches/1/animation"
+    )
+
+    assert run.status_code == 200, run.text
+    assert batches.status_code == 200, batches.text
+    assert animation.status_code == 200, animation.text
+    payload = animation.json()
+    assert payload["scenario_id"] == scenario_id
+    assert payload["batch_sequence"] == 1
+    assert payload["equipment_type"] == "forklift"
+    assert payload["source_scene_step"] == 0
+    assert payload["target_scene_step"] == 1
+    assert Decimal(payload["estimated_duration_seconds"]) > 0
+    assert [event["type"] for event in payload["events"]] == [
+        "travel",
+        "pickup",
+        "dropoff",
+        "travel",
+    ]
+    pickup = payload["events"][1]
+    dropoff = payload["events"][2]
+    assert pickup["location_id"] == source_id
+    assert pickup["carton_ids"] == [carton_id]
+    assert dropoff["location_id"] == target_id
+    assert dropoff["carton_ids"] == [carton_id]
+    assert payload["events"][0]["carton_ids"] == []
+    assert payload["events"][3]["carton_ids"] == []
+    travel_events = [
+        event
+        for event in payload["events"]
+        if event["type"] == "travel"
+    ]
+    assert all(event["waypoints"] for event in travel_events)
+    assert travel_events[0]["waypoints"][0]["node_id"] == "dispatch"
+    expected_approach = f"approach:{aisle}:B001:left"
+    assert travel_events[0]["waypoints"][-1]["node_id"] == (
+        expected_approach
+    )
+    assert travel_events[-1]["waypoints"][0]["node_id"] == (
+        expected_approach
+    )
+    assert travel_events[-1]["waypoints"][-1]["node_id"] == "dispatch"
+    assert all(
+        Decimal(waypoint["z_m"]) == 0
+        for event in travel_events
+        for waypoint in event["waypoints"]
+    )
+    assert Decimal(
+        travel_events[-1]["waypoints"][-1][
+            "cumulative_distance_m"
+        ]
+    ) == Decimal(payload["route_distance_m"])
+    assert Decimal(payload["events"][-1]["end_seconds"]) == Decimal(
+        payload["estimated_duration_seconds"]
+    )
+    assert all(
+        not waypoint["node_id"].startswith("location:")
+        for event in travel_events
+        for waypoint in event["waypoints"]
+    )
+
+
+def test_batch_animation_invalid_scenario_batch_and_pending_responses(
+    db_client: TestClient,
+    db_session: Session,
+) -> None:
+    aisle, source_id, _, _ = create_movement_context(
+        db_client,
+        db_session,
+        "ANIM-ERR",
+    )
+    pending_id = create_scenario(
+        db_client,
+        "BATCH-ANIMATION-ERRORS-PENDING",
+        aisle,
+        seed=102,
+    )
+    completed_id = create_scenario(
+        db_client,
+        "BATCH-ANIMATION-ERRORS-COMPLETED",
+        aisle,
+        seed=103,
+    )
+    run = db_client.post(f"/simulation-scenarios/{completed_id}/run")
+
+    missing_scenario = db_client.get(
+        "/simulation-scenarios/999999999/move-batches/1/animation"
+    )
+    pending = db_client.get(
+        f"/simulation-scenarios/{pending_id}/move-batches/1/animation"
+    )
+    missing_batch = db_client.get(
+        f"/simulation-scenarios/{completed_id}"
+        "/move-batches/999999/animation"
+    )
+    invalid_sequence = db_client.get(
+        f"/simulation-scenarios/{completed_id}"
+        "/move-batches/0/animation"
+    )
+    source = db_session.get(WarehouseLocation, source_id)
+    assert source is not None
+    source.rack.is_active = False
+    db_session.flush()
+    unreachable = db_client.get(
+        f"/simulation-scenarios/{completed_id}"
+        "/move-batches/1/animation"
+    )
+
+    assert run.status_code == 200, run.text
+    assert missing_scenario.status_code == 404
+    assert pending.status_code == 409
+    assert missing_batch.status_code == 404
+    assert invalid_sequence.status_code == 422
+    assert unreachable.status_code == 409
+    assert "Safe animation route" in unreachable.json()["detail"]
